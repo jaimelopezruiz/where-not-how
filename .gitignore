@@ -1,0 +1,7 @@
+# Raw video and calibration frames stay local (uploaded separately as a dataset)
+data/raw/
+
+__pycache__/
+*.egg-info/
+.ik_baseline.npz
+docs/media/tests/
