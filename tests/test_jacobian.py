@@ -31,6 +31,7 @@ def verify_jac(thetalist):
 
     err = np.max(np.abs(J_analytical - J_num))
     print(f"{'PASS' if err < 1e-4 else 'FAIL'}  max_err={err:.2e}  theta={np.round(thetalist, 3)}")
+    return err
 
 
 if __name__ == "__main__":

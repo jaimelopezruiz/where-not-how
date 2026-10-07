@@ -1,6 +1,6 @@
 """capture/live_check.py against synthetic board + cube scenes with known ground truth.
 
-Run from the repo root:  python -m tests.test_live_check
+Run from the repo root:  python -m tests.test_live_check   (or: python -m pytest tests/test_live_check.py)
 """
 import tempfile
 from pathlib import Path
@@ -62,6 +62,7 @@ POS_TOL, Z_TOL, YAW_TOL_DEG = 5e-3, 5e-3, 0.5
 
 
 def test_pose_matches_ground_truth():
+    """A frame, yaw-sign or depth error in the image pipeline shows as millimetres beyond the detector's known limit."""
     cases = [(0.28, 0.05, 0.0), (0.30, 0.15, np.radians(30)), (0.25, 0.25, np.radians(-60)),
              (0.35, 0.10, np.radians(90)), (0.22, 0.20, np.radians(135))]
     worst = np.zeros(4)
@@ -79,6 +80,7 @@ def test_pose_matches_ground_truth():
 
 
 def test_yaw_wraps_around_180():
+    """A naive angle difference breaks at +-180 deg; yaw must stay correct across the wrap."""
     for deg in (170, 179, 181, -179, -170):
         frame, _ = scene(0.28, 0.12, np.radians(deg))
         obs, _, _ = live_check.observe(frame, DETECTOR, BOARD, PROPS, K, DIST)
@@ -87,6 +89,7 @@ def test_yaw_wraps_around_180():
 
 
 def test_still_cube_jitter_is_small():
+    """Pose noise on a still cube above a fraction of a millimetre would make the live check meaningless."""
     stats = live_check.RollingStats(20)
     for seed in range(20):
         frame, _ = scene(0.30, 0.12, np.radians(20), noise=2.0, seed=seed)
@@ -98,6 +101,7 @@ def test_still_cube_jitter_is_small():
 
 
 def test_rolling_std_handles_yaw_wrap():
+    """A naive std of yaw across +-180 deg reads about 180 deg instead of a small spread."""
     s = live_check.RollingStats(10)
     for d in (179.5, -179.5, 179.8, -179.8, 180.0, 179.0, -179.0, 179.6, -179.6, 179.9):
         s.push(0.0, 0.0, np.radians(d))
@@ -107,12 +111,14 @@ def test_rolling_std_handles_yaw_wrap():
 
 
 def test_missing_cube_or_board_gives_no_observation():
+    """A frame without both markers must give no pose, never a stale or half-built one."""
     frame, _ = scene(0.3, 0.1, 0.0, with_cube=False)
     assert live_check.observe(frame, DETECTOR, BOARD, PROPS, K, DIST)[0] is None
     assert live_check.observe(np.full((SIZE[1], SIZE[0], 3), 255, np.uint8), DETECTOR, BOARD, PROPS, K, DIST)[0] is None
 
 
 def test_one_board_marker_is_not_enough():
+    """A board pose from a single marker is poorly conditioned and must be refused."""
     frame, _ = scene(0.3, 0.1, 0.0)
     corners, ids, _ = DETECTOR.detectMarkers(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
     first = [i for i, m in enumerate(ids.ravel()) if m == 0]
@@ -131,6 +137,7 @@ def test_refuses_null_props():
 
 
 def test_cli_on_video_and_size_check():
+    """The loop must track a moving cube through a short dropout, count it, and reject intrinsics from another resolution."""
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
         (tmp / "props.yaml").write_text(

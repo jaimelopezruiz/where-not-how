@@ -27,6 +27,13 @@ dependencies = [
     "pyyaml==6.0.3",          # data/props.yaml
 ]
 
+[project.optional-dependencies]
+dev = ["pytest==9.1.1"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["slow: takes more than ~5 s on its own; excluded by -m \"not slow\""]
+
 [tool.setuptools.packages.find]
 include = ["capture*", "extract*", "sim*", "control*", "rl*", "eval*"]
 

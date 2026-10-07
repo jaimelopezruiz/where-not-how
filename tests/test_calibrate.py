@@ -1,6 +1,6 @@
 """capture/calibrate.py against synthetic checkerboard views with known intrinsics.
 
-Run from the repo root:  python -m tests.test_calibrate
+Run from the repo root:  python -m tests.test_calibrate   (or: python -m pytest tests/test_calibrate.py)
 """
 import tempfile
 from pathlib import Path
@@ -41,6 +41,7 @@ def render(T, seed=0):
 
 
 def test_recovers_known_intrinsics():
+    """A wrong object-point scale, corner order or per-view error shows as intrinsics that miss the known camera."""
     with tempfile.TemporaryDirectory() as tmp:
         frames = Path(tmp) / "frames"
         frames.mkdir()
@@ -64,6 +65,7 @@ def test_recovers_known_intrinsics():
 
 
 def test_fix_k3_holds_k3_at_zero():
+    """A --fix-k3 flag that is ignored leaves k3 free to absorb noise when there are few frames."""
     found = [calibrate.find_corners(render(T, i), PATTERN) for i, T in enumerate(random_views(15, seed=3))]
     corners = [c for ok, c in found if ok]          # a steep view may legitimately fail to detect
     assert len(corners) >= 10
@@ -71,11 +73,13 @@ def test_fix_k3_holds_k3_at_zero():
 
 
 def test_blank_image_has_no_board():
+    """A false-positive board detection would let junk frames into the calibration."""
     found, corners = calibrate.find_corners(np.full((SIZE[1], SIZE[0]), 200, np.uint8), PATTERN)
     assert not found and corners is None
 
 
 def test_offline_refuses_too_few_frames():
+    """Calibrating from a handful of frames would write intrinsics that look valid and are not."""
     with tempfile.TemporaryDirectory() as tmp:
         for i, T in enumerate(random_views(3)):
             cv2.imwrite(str(Path(tmp) / f"f{i}.png"), render(T))

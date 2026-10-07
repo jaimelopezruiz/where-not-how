@@ -14,7 +14,16 @@ packages named `kinematics`, `urdf` and `tests`.
 | `so101_new_calib.urdf` | `urdf/so101_new_calib.urdf` | none |
 
 Tests copied to `tests/` (`robot.py`, `test_ik.py`, `test_jacobian.py`) have only their imports
-rewritten. Their docstrings still cite DEVLOG entries that live in the teleop repo.
+rewritten, plus one line in `test_jacobian.py` (below). Their docstrings still cite DEVLOG entries that live
+in the teleop repo.
+
+| Test file | Change |
+|-----------|--------|
+| `tests/robot.py` | imports: `kinematics.core` and `urdf.parser` became `control.kinematics.core` and `control.kinematics.parser` |
+| `tests/test_ik.py` | imports: `kinematics.core` and `kinematics.ik` became `control.kinematics.core` and `control.kinematics.ik` |
+| `tests/test_jacobian.py` | imports as above; `verify_jac` now ends with `return err` so a wrapper can assert on it (it printed FAIL but could not fail) |
+
+`tests/test_kinematics_vendored.py` runs these under pytest without modifying `test_ik.py` further.
 `test_fk.py` (FK against yourdfpy) was not copied; FK is checked against MuJoCo instead.
 
 ## Licenses

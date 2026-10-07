@@ -57,6 +57,8 @@ Statuses: `todo` / `in progress` / `done` / `blocked` / `cut`.
 5. Write the README yourself.
 6. T3, T5 and C6.1 do not wait for real data: develop them on synthetic reference paths
    (line, arc, S-curve) generated in code. This is not tuning on test; the split doesn't exist yet.
+7. Each module lands with its test in the same commit.
+   `python -m pytest -m "not slow"` passes before every commit.
 
 ## Schedule
 
@@ -123,14 +125,20 @@ Statuses: `todo` / `in progress` / `done` / `blocked` / `cut`.
   Per-frame pose absorbs small tripod shake.
 - [ ] **C2.2 Cube pose.** `solvePnP` on the cube marker, transform to table frame, drop to (x, y, yaw).
   Do not push the cube marker through a table-plane homography: it sits at cube height and parallax biases position.
+  **Test (C2.1 and C2.2):** synthetic render with a known cube path (reuse `tests/synth.py`); the extracted
+  (x, y, yaw) in the z-up table frame matches. Catches OpenCV's y-down/z-in frame leaking through, and a flipped yaw sign.
 - [ ] **C2.3 Fingertip.** MediaPipe Hands landmark 8, back-project the ray, intersect with the plane
   z = fingertip radius (~8 mm). Needed only for T7.
 - [ ] **C2.4 Cleaning.** Drop low-confidence frames, interpolate gaps ≤ 5 frames, Savitzky–Golay filter,
   resample to the sim control rate. Contact window from cube speed threshold.
+  **Test:** gaps of ≤ 5 frames are interpolated, longer gaps are left as gaps; yaw is unwrapped before filtering.
 - [ ] **C2.5 Output + checks.** `data/processed/ep_XXX.npz` with `t, cube_xy_yaw, finger_xy, contact`.
   Plot all trajectories on one figure. Sanity: recovered cube size matches the measured one.
+  **Test:** a schema validator (keys, shapes, metres, increasing time, recovered cube size vs `props.yaml`),
+  run on every real episode as well as in the tests.
 - [ ] **C2.6 Freeze split.** Seeded 80/20 train/test by episode, stratified by category; showcase set separate.
   Write `data/splits.json` and commit before any method runs.
+  **Test:** same split for the same seed, no train/test overlap, showcase episodes excluded.
 
 ## T3: Simulation env (P0)
 
@@ -140,15 +148,19 @@ Statuses: `todo` / `in progress` / `done` / `blocked` / `cut`.
   (1000 random configs: max 0.0038 mm, mean 0.0018 mm). Tables in `results/`.
 - [ ] **C3.2 Scene.** Table, cube with measured size and mass, small capsule pusher at the end effector
   for clean single-point contact. Start friction values, then tune: cube must slide, not tip or stick.
+  **Test:** a constant push makes the cube slide without tipping.
 - [ ] **C3.3 EE controller.** Action = planar EE velocity at fixed height → target → DLS IK → position actuators.
   SO-101: your library, position-only IK. Panda: MuJoCo site Jacobian with the same damped pseudo-inverse.
   Verify your FK against the MuJoCo EE site on random configs; save the error table for the README.
   FK check done under G1 (`sim/fk_check.py`). Two IK findings the wrapper must handle (see decision log):
   take the target orientation from the current configuration, and re-check FK on the returned angles.
+  **Test:** the IK wrapper rejects a "converged" solution that lands on a joint limit and misses by > 1 mm.
+  This is the regression test for the clamp finding in the decision log.
 - [ ] **C3.4 Workspace map.** One affine map (translation + uniform scale ≤ 1) from human table frame to robot
   workspace, shared by all episodes. Report how many trajectories fall outside reach.
 - [ ] **C3.5 Gymnasium env `PushTrack-v0`.** Reset samples a trajectory from a given split, places the cube at
   its start pose, pusher at standby. `render()` returns RGB for GIFs. Observation, action and reward as in T6.
+  **Test:** gymnasium's `check_env` passes; a seeded reset gives the same result twice.
 
 ## T4: Evaluation harness (P0)
 
@@ -156,8 +168,12 @@ Built before any method so every row of the results table is measured the same w
 
 - [ ] **C4.1 Metrics.** Mean deviation from the reference path (cm), final position error (cm),
   success (final error < 2 cm and progress ≥ 90%), completion time. Breakdown by category.
+  **Test:** hand-computed cases: perfect tracking scores 0, a constant offset gives the known deviation, and
+  results just either side of the success threshold.
 - [ ] **C4.2 Runner.** `evaluate(controller, split) → results.csv`, trajectory overlay plots,
   GIF writer with real video and sim render side by side.
+- [ ] **C4.3 Smoke test.** One synthetic episode through extract → env → scripted pusher → metrics in under 30 s,
+  not marked slow. This is also what C11.2's clean-clone test runs.
 
 ## T5: Scripted pusher (P0, critical path to G2)
 
@@ -268,6 +284,12 @@ Built before any method so every row of the results table is measured the same w
 - 2026-10-07: OpenCV 5 differences hit so far: `findChessboardCornersSB` returns corners as (N, 2), not (N, 1, 2);
   ArUco corner refinement defaults to none, so `live_check` sets `CORNER_REFINE_SUBPIX` (improves synthetic
   error from ~5-8 mm to ~3 mm).
+- 2026-10-07: pytest is the single test command (`pytest==9.1.1`, `dev` extra; `slow` marker for tests over ~5 s;
+  `python -m tests.<name>` still works). Two gaps found in the vendored checks: `test_ik.py` and `test_jacobian.py`
+  had no `test_` functions, so pytest skipped them, and `test_jacobian.py` printed FAIL but always exited 0, so it
+  could never fail. `tests/test_kinematics_vendored.py` wraps both with real assertions (one-line change to
+  `verify_jac` to return its error; `test_ik` is called unmodified). Slow: the full IK sweep (~24 s); a fast subset
+  of it (noise <= 1.0, same seeds, ~4 s) is in the commit gate.
 
 ## What didn't work
 

@@ -1,6 +1,6 @@
 """PoE forward kinematics against the MuJoCo SO-101 model (G1).
 
-Run from the repo root:  python -m tests.test_fk_mujoco
+Run from the repo root:  python -m tests.test_fk_mujoco   (or: python -m pytest tests/test_fk_mujoco.py)
 """
 import numpy as np
 
@@ -12,6 +12,7 @@ EXPECTED_JOINTS = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", 
 
 
 def test_fk_matches_mujoco():
+    """A wrong joint zero, sign, order or axis in the PoE model shows as FK error against MuJoCo."""
     res = fk_check.run(n=300, seed=1)
     pe = res["pos_err"] * 1000
     print(f"\nFK position error over {res['n']} configs: max {pe.max():.5f} mm, mean {pe.mean():.5f} mm")
@@ -38,6 +39,7 @@ def test_check_detects_a_flipped_joint_sign():
 
 
 def test_ik_misses_come_from_the_joint_limit_clamp():
+    """A converged IK solution that misses its tolerance must be explained by the joint-limit clamp and nothing else."""
     ik = fk_check.ik_in_mujoco(n=150, seed=3)
     print(f"\nIK: {ik['success_rate'] * 100:.0f}% converged, {ik['miss']} misses, {ik['miss_at_limit']} at a limit")
     assert ik["success_rate"] > 0.95
