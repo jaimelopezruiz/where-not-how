@@ -29,12 +29,12 @@ def open_capture(source, width=None, height=None, fourcc=None, backend=None):
     if isinstance(source, int):
         backend = cv2.CAP_DSHOW if backend is None else backend
         cap = cv2.VideoCapture(source, backend)
-        if fourcc:
-            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*fourcc))
         if width:
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
         if height:
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        if fourcc:  # after the size: on DirectShow a size change resets the format (C270: MJPG -> YUY2, 7.5 fps)
+            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*fourcc))
     else:
         backend = None
         cap = cv2.VideoCapture(str(source))
