@@ -28,7 +28,7 @@ Statuses: `todo` / `in progress` / `done` / `blocked` / `cut`.
 | ID  | Task                               | Pri | Est.   | Day | Status |
 |-----|------------------------------------|-----|--------|-----|--------|
 | T0  | Repo + environment                 | P0  | 1 h    | Wed | done   |
-| T1  | Data capture                       | P0  | 2–3 h  | Wed | in progress |
+| T1  | Data capture                       | P0  | 2–3 h  | Wed | done   |
 | T2  | Extraction pipeline                | P0  | 3–4 h  | Wed | todo   |
 | T3  | Simulation env                     | P0  | 3–4 h  | Wed/Thu | in progress |
 | T4  | Evaluation harness                 | P0  | 2 h    | Thu | todo   |
@@ -123,7 +123,7 @@ Statuses: `todo` / `in progress` / `done` / `blocked` / `cut`.
   Live check: box still, std x 0.05-0.11 mm, y 0.06-0.20 mm, yaw 0.02-0.05 deg. Three test pushes (straight x,
   straight y, curve): 0 dropouts. A 300 mm move along a ruler read 304.5 mm (1.5%, likely hand placement).
   Box-top positions at four places fit one plane to < 1 mm, tilted 3.5 deg from the board frame (see C2.1).
-- [ ] **C1.3 Recording protocol.** Webcam fixed (same placement for every clip), angled down 45–60°, whole board and workspace in frame.
+- [x] **C1.3 Recording protocol.** Webcam fixed (same placement for every clip), angled down 45–60°, whole board and workspace in frame.
   30–40 episodes, slow quasi-static pushes, index finger for most:
   straight ×10, curve ×10, turn ×8, natural multi-finger ×5 (labelled), plus 3–5 "letter" traces kept
   aside for the showcase. Hand out of frame for 1 s at start and end of each clip.
@@ -141,6 +141,16 @@ Statuses: `todo` / `in progress` / `done` / `blocked` / `cut`.
   `test_XXX.*` with no manifest row. Tested offline; **episodes still to record.**
   **Test:** `tests/test_record.py`: video frames == CSV rows == frames fed, pose round-trip through the written
   video, frame-size refusal before any file exists, an existing episode is never overwritten.
+  **Done 2026-10-07.** 72 episodes recorded (ep_000-ep_071), 38 kept: straight 10, curve 11, turn 8, multi 5,
+  showcase 4 (L, U, S and a C traced NL -> MR -> FL, which reads as a C from the board side). 34 marked `discard`
+  in the manifest (bad takes, plus 6 removed by the QA pass below). An earlier batch of 6 that broke the one-finger
+  rule is in `data/raw/_practice/` with its own manifest and is not used. Recorded at `--exposure -7`.
+  QA pass over every kept episode (detection on the saved video): box visible in 100% of frames in 37 of 38, no
+  gap over 5 frames mid-push, max frame-to-frame step <= 5 mm, max tilt 11 deg. Discarded by QA: ep_019 and
+  ep_022 (first 2.5-3.1 s of the push hidden), ep_023 (0.9 s hidden mid-push, box moved 57 mm), ep_052 (6.5 s
+  hidden), ep_032 and ep_039 (camera moved while the board was hidden; see decision log). ep_030, 034, 049, 050
+  kept with the note `board occluded ~3-4 s` (camera static, so harmless). In 11 episodes the box was already
+  moving in the first frame, so extraction must not assume a still start.
 
 ## T2: Extraction pipeline (P0)
 
@@ -149,6 +159,11 @@ Statuses: `todo` / `in progress` / `done` / `blocked` / `cut`.
   The board's orientation estimate is the weak part (3.5 deg tilt found in the C1.2 live check), so: fit a plane
   to all box-top positions (the box always lies flat), take the table normal from that fit, and use the board only
   for the origin and the x direction projected onto the plane. Report the plane-fit residual (< 1 mm at C1.2).
+  The camera is not fixed between episodes and occasionally moved within one (decision log, C1.3 QA), so the board
+  pose must be per frame, never one pose per session. Use only frames with all 4 board markers: with 2 markers
+  visible the board depth wanders 10-25 mm with no real motion. Hold or interpolate the 4-marker pose across
+  occlusions (the arm often hides the board for 3-7 s). Per episode, report the board's pixel drift from first to
+  last frame as a QA figure (0.0-0.3 px for a static camera).
 - [ ] **C2.2 Cube pose.** `solvePnP` on the cube marker, transform to table frame, drop to (x, y, yaw).
   Do not push the cube marker through a table-plane homography: it sits at cube height and parallax biases position.
   **Test (C2.1 and C2.2):** synthetic render with a known cube path (reuse `tests/synth.py`); the extracted
@@ -338,6 +353,14 @@ Built before any method so every row of the results table is measured the same w
   7.7 MB/s at 30 fps on noisy synthetic frames); q=50 0.03 / 0.20 mm; q=10 0.10 / 0.58 mm. `record.py` selects that
   backend explicitly at quality 100 and refuses to run if the backend or quality read-back is anything else. The
   rate depends on image content, so startup prints the rate measured by encoding the first frames.
+- 2026-10-07: Camera movement (C1.3 QA). Tracking the board's marker centres in raw pixels: static to 0.0-0.3 px
+  within most episodes, but the camera shifted between episodes (several jumps of 20-50 px, mostly during
+  discarded retakes) and within ep_018 (21 px), ep_039 (41 px, board 4.7% larger, ~35 mm closer) and a slow 3-7 px
+  creep over ep_030-034. Positions are measured against the board each frame, so movement only corrupts data
+  while the board is hidden: ep_018, 032, 039 discarded for that. Likely cause: the clip-on mount on a free-standing
+  mirror, or the cable, being nudged while resetting the box. The 9 re-recorded episodes all show <= 0.2 px drift.
+- 2026-10-07: Discard criteria for recorded episodes: box hidden for more than 5 frames while moving, start of the
+  push hidden, or board hidden while the camera moved. Board occlusion with a static camera is kept with a note.
 
 ## What didn't work
 
@@ -363,3 +386,8 @@ Built before any method so every row of the results table is measured the same w
   environment options did nothing either.
 - `tests/test_live_check.py::test_refuses_null_props` depended on the real `data/props.yaml` holding nulls and failed
   once the measured values went in. It now builds its own null file.
+- Recording: 34 of 72 takes discarded. Causes: first batch ignored the one-finger rule (moved to `_practice`),
+  reaching over the board hid it, the hand covered the box marker at the start of a push, and pushing started
+  straight after SPACE instead of after a 1 s still.
+- QA first pass required board and box in the same frame and so reported board occlusions as box dropouts;
+  the box was visible throughout in those episodes. Separating the two changed the verdict on 5 episodes.
