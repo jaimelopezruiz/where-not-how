@@ -1,0 +1,9 @@
+# Measured prop dimensions (C1.2). Fill every value with what you measured with the ruler and
+# scale, not the nominal print size. Millimetres and grams. Scripts refuse to run on null values.
+board:                      # 2x2 GridBoard, DICT_4X4_50, IDs 0-3
+  marker_side_mm: null      # black-border to black-border side of one printed marker
+  gap_mm: null              # white gap between neighbouring markers
+cube:
+  marker_side_mm: null      # ID 10, black-border to black-border side
+  side_mm: null             # cube edge length
+  mass_g: null
