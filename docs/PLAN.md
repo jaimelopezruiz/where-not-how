@@ -12,12 +12,24 @@ as the command for an RL pushing policy in MuJoCo. Compare against copying the h
 (open-loop fingertip replay) and a hand-coded pusher. At test time the policy takes a
 newly recorded trajectory as input, so my data is what drives the robot.
 
+The principle itself (object motion as the embodiment-agnostic signal) is established: Im2Flow2Act
+(CoRL 2024), HuDOR (arXiv 2410.23289), Human2Sim2Robot (CoRL 2025). The claims here are narrower:
+
+1. One goal-conditioned policy over many recorded trajectories, scored on held-out recordings
+   (Human2Sim2Robot trains one policy per task; Im2Flow2Act conditions on object flow from a generative model,
+   not on recorded trajectories).
+2. Non-prehensile pushing, where copying the hand is expected to fail hardest (T7 tests this): the pusher-slider system is hybrid and
+   underactuated (Hogan & Rodriguez, IJRR 2020).
+3. A low-cost 5-DOF arm with closed-form PoE kinematics (DLS IK) validated against MuJoCo.
+4. A progress-indexed (path-following) reward rather than time-indexed tracking (Aguiar, Kokotovic &
+   Hespanha, IEEE TAC 2005).
+
 ## Priorities
 
 - **P0 (submission floor):** data, extraction, sim, eval harness, scripted pusher, README, submit.
   With P0 done the repo meets the brief.
-- **P1 (what makes it stand out):** RL policy, hand-replay baseline, showcase GIF.
-- **P2 (stretch):** data-scaling curve, yaw tracking.
+- **P1 (what makes it stand out):** RL policy, hand-replay baseline, showcase GIF, data-scaling curve.
+- **P2 (stretch):** time-indexed reward ablation (C6.6), yaw tracking.
 
 Rule: no P1 work until the P0 floor is green, except launching RL runs to train overnight.
 
@@ -36,15 +48,15 @@ Statuses: `todo` / `in progress` / `done` / `blocked` / `cut`.
 | T6  | RL policy                          | P1  | 6–8 h  | Thu/Fri | todo |
 | T7  | Hand-replay baseline               | P1  | 2 h    | Thu | todo   |
 | T8  | Showcase trajectory                | P1  | 1 h    | Fri | todo   |
-| T9  | Data-scaling curve                 | P2  | compute| Thu night | todo |
-| T10 | Yaw tracking                       | P2  | 2–3 h  | Fri | todo   |
+| T9  | Data-scaling curve                 | P1  | compute| Thu night | cut  |
+| T10 | Yaw tracking                       | P2  | 2–3 h  | Fri | cut    |
 | T11 | README / presentation              | P0  | 4–5 h  | Fri | todo   |
 | T12 | Submission                         | P0  | 0.5 h  | Fri | todo   |
 
 ## Gates (decide at the time, log the decision)
 
 - **G1, Wed after T3.1 (1 h timebox):** SO-101 MJCF loads and IK matches → use SO-101. Otherwise Panda from MuJoCo Menagerie.
-- **G2, Thu 12:00:** scripted pusher completes held-out trajectories in sim → submittable floor reached. If not, all time goes to T5 until it does.
+- **G2, Thu 15:00:** scripted pusher completes held-out trajectories in sim → submittable floor reached. If not, all time goes to T5 until it does.
 - **G3, Thu 23:00:** RL learning curve rising on the full train split → keep training overnight. If flat, switch T6 to residual RL on top of the scripted pusher (C6.5).
 - **G4, Fri 18:00:** code freeze. README, GIFs and submission only after this.
 
@@ -65,8 +77,8 @@ Statuses: `todo` / `in progress` / `done` / `blocked` / `cut`.
 - **Wed:** before campus: T0, C1.1 (monitor checkerboard), G1, measure props, fix camera and lighting.
   Print markers on campus (C1.2), record in the afternoon while there's daylight (C1.3).
   Evening: T2 on the recordings; C3.2, C3.5 and T5 on synthetic paths (rule 6).
-- **Thu:** finish T3, T4, T5 → G2 at 12:00. Then T6 and T7. Launch overnight runs (T6 full, T9).
-- **Fri:** evaluate, T8, optional T10 until 18:00 (G4). T11, clean-clone test, T12 by 21:00.
+- **Thu:** finish T3, T4, T5 → G2 at 15:00. Then T6 and T7. Launch overnight runs (T6 full).
+- **Fri:** evaluate, T8 until 18:00 (G4). T11, clean-clone test, T12 by 21:00.
 
 ----
 
@@ -219,6 +231,9 @@ Built before any method so every row of the results table is measured the same w
 
 ## T5: Scripted pusher (P0, critical path to G2)
 
+A closed-loop tracking controller on the object trajectory, no learning. Not equivalent to
+object-aware replay (that is T7).
+
 - [ ] **C5.1 Controller.** Lookahead point on the reference path ahead of the cube's progress, push direction d.
   Pusher goal = cube − (half side + margin)·d. Approach by arcing around the cube, not through it.
   Push along d with lateral correction.
@@ -236,8 +251,15 @@ Built before any method so every row of the results table is measured the same w
 - [ ] **C6.4 Full train** on the train split, fixed seeds, TensorBoard logs, checkpoints. Evaluate at G3.
 - [ ] **C6.5 Fallback: residual RL.** Action = scripted pusher + learned residual. Matches the brief's
   "bootstrap a policy and use RL" suggestion; use only if G3 fails, and say so in the README.
+  Residual RL on a base controller is used in HuDOR and ManipTrans.
+- [ ] **C6.6 Time-indexed reward ablation (P2).** The same PPO setup with a time-indexed tracking reward
+  (reference point at time t, not at progress p); compare on the test split. Turns claim (4) from a cited design
+  choice into a result.
 
 ## T7: Hand-replay baseline (P1)
+
+This is the "replay" baseline of Human2Sim2Robot and HuDOR's base policy (retargeted hand, open-loop). Since the
+sim cube starts at the recorded start pose, their "object-aware" variant is identical here.
 
 - [ ] **C7.1** Fingertip path through the same workspace map, followed open-loop at the recorded timing.
   Evaluate with T4. Expected to fail; the failure modes are evidence for the thesis, so capture GIFs of them.
@@ -246,11 +268,16 @@ Built before any method so every row of the results table is measured the same w
 
 - [ ] **C8.1** Run the best controller on the held-aside letter traces. Side-by-side GIF for the top of the README.
 
-## T9: Data-scaling curve (P2)
+## T9: Data-scaling curve (P1)
+
+Extra evidence for claim (1); the main evidence is the T6 policy scored on the test split. Cut for now: its six runs
+would compete with the T6 full run for CPU overnight. Revisit at G3.
 
 - [ ] **C9.1** Train on 5 / 10 / 20 demos, 2 seeds each, same held-out test set. Overnight Thursday. One plot.
 
 ## T10: Yaw tracking (P2)
+
+Rotating the cube needs pusher contact-mode switching, so yaw stays P2.
 
 - [ ] **C10.1** Add orientation error to reward and metrics. Only if position tracking is solid by Friday midday.
 
@@ -361,6 +388,19 @@ Built before any method so every row of the results table is measured the same w
   mirror, or the cable, being nudged while resetting the box. The 9 re-recorded episodes all show <= 0.2 px drift.
 - 2026-10-07: Discard criteria for recorded episodes: box hidden for more than 5 frames while moving, start of the
   push hidden, or board hidden while the camera moved. Board occlusion with a static camera is kept with a note.
+- 2026-10-07: Replan at 21:00, about half a day behind (T2 not started Wed evening). G2 moved from Thu 12:00
+  to Thu 15:00. T9 (data-scaling curve) and T10 (yaw tracking) cut; the time goes to the P0 floor and T6.
+- 2026-10-07: Related-work repositioning. Object motion as the embodiment-agnostic signal is established (Im2Flow2Act,
+  HuDOR, Human2Sim2Robot), so it is no longer claimed as the contribution. Claims narrowed to: (1) one
+  goal-conditioned policy over many recorded trajectories, scored on held-out recordings; (2) non-prehensile
+  pushing, where copying the hand is expected to fail hardest; (3) a low-cost 5-DOF arm with closed-form PoE kinematics validated
+  against MuJoCo; (4) a progress-indexed reward rather than time-indexed tracking. T5, T7, C6.5 and T10 annotated
+  with how they relate to that prior work. README is unchanged.
+- 2026-10-07: T9 moved to P1 but stays cut: its six runs would compete with the T6 full run for CPU overnight, and
+  the T6 test-split evaluation already supports claim (1). Revisit at G3. C6.6 (time-indexed reward ablation, P2)
+  added: it turns claim (4) from a cited design choice into a result.
+- 2026-10-07: "Hand as hint" considered, not planned: use the fingertip's approach side to choose where the pusher
+  starts (after Human2Sim2Robot's pre-contact hand-pose initialisation).
 
 ## What didn't work
 
