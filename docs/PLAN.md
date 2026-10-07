@@ -117,7 +117,8 @@ Statuses: `todo` / `in progress` / `done` / `blocked` / `cut`.
   **Done 2026-10-07.** Print scale 0.9406 on both paper axes (sheet 1: 150.5 mm over 160; sheet 3: 186.5 over 198),
   so board marker 56.4 mm, gap 37.6 mm. Object: AirPods box 81 x 81 x 32.5 mm, 80 g, 50 mm print marker
   (47.0 mm measured). Board taped at the far end of the table, pushing area in front of it.
-  Capture settings for everything from here on: `--source 2 --width 1280 --height 720 --exposure -6 --fourcc MJPG`
+  Capture settings for everything from here on: `--source 2 --width 1280 --height 720 --exposure -7 --fourcc MJPG`
+  (-7 with the room light on for recording; -6 was right under the dimmer calibration lighting)
   (30 fps; without MJPG the C270 sends YUY2 at 7.5 fps).
   Live check: box still, std x 0.05-0.11 mm, y 0.06-0.20 mm, yaw 0.02-0.05 deg. Three test pushes (straight x,
   straight y, curve): 0 dropouts. A 300 mm move along a ruler read 304.5 mm (1.5%, likely hand placement).
@@ -133,6 +134,13 @@ Statuses: `todo` / `in progress` / `done` / `blocked` / `cut`.
   keypress start/stop per episode, `data/raw/ep_XXX.avi` (MJPG, top quality) plus `ep_XXX_t.csv` with per-frame
   `perf_counter()` timestamps, category prompt appending to `data/manifest.csv`, live preview with REC and fps,
   refuses to start if the frame size doesn't match `data/intrinsics.npz`. Verify on a 5 s clip run offline.
+  **Tooling written** (`python -m capture.record`; defaults are the C1.2 capture settings). Keys in the preview
+  window: `s c t m l` sticky category (straight, curve, turn, multi, showcase), `d` discard (still logged), `n` notes,
+  SPACE start/stop, `q` quit. Also writes `ep_XXX_meta.json` (source, size, camera format, exposure read-back, measured
+  fps, sha256 of `intrinsics.npz`, props). REC is refused below `--min-fps 20` (the YUY2 fallback). `--test` writes
+  `test_XXX.*` with no manifest row. Tested offline; **episodes still to record.**
+  **Test:** `tests/test_record.py`: video frames == CSV rows == frames fed, pose round-trip through the written
+  video, frame-size refusal before any file exists, an existing episode is never overwritten.
 
 ## T2: Extraction pipeline (P0)
 
@@ -321,6 +329,15 @@ Built before any method so every row of the results table is measured the same w
   residual, i.e. the box moves on a flat plane tilted 3.5 deg from the board frame, and the plane sits 1.7 mm from
   the expected height at the board origin. Cause: the board's orientation estimate (15 cm board, oblique view).
   Effect on (x, y): 1 - cos 3.5 deg = 0.2% plus ~2 mm offset. To be handled in extraction by fitting the plane (C2.1).
+- 2026-10-07: Video writer for `record.py` (C1.3). Plain `cv2.VideoWriter(path, MJPG, ...)` uses the FFMPEG backend at
+  a low fixed quality (29 KB/frame at 1280x720): detection on the read-back clip shifted the pose by up to 6.4 mm,
+  5.3 mm and 1.7 deg against the source frames, far outside the 0.05-0.2 mm static jitter. FFMPEG's quality cannot
+  be set (`writer.set` returns False; `OPENCV_FFMPEG_WRITER_OPTIONS` with qmin/qmax, global_quality, q, qscale all
+  gave byte-identical output). OpenCV's built-in encoder (`CAP_OPENCV_MJPEG`) takes a 0-100 quality through
+  `writer.set(VIDEOWRITER_PROP_QUALITY, q)`: q=100 read back within 0.012 / 0.111 mm and 0.010 deg (258 KB/frame,
+  7.7 MB/s at 30 fps on noisy synthetic frames); q=50 0.03 / 0.20 mm; q=10 0.10 / 0.58 mm. `record.py` selects that
+  backend explicitly at quality 100 and refuses to run if the backend or quality read-back is anything else. The
+  rate depends on image content, so startup prints the rate measured by encoding the first frames.
 
 ## What didn't work
 
@@ -336,7 +353,13 @@ Built before any method so every row of the results table is measured the same w
 - Camera index 0 (the scripts' default) is another device on this PC: `camera returned no frame`. Found the C270 by
   probing indices 0-3 on DirectShow and MSMF with it plugged and unplugged.
 - Manual exposure: DirectShow reports auto-exposure mode -1 and the lock warning stays, though exposure reads back
-  -6 as requested. Passing `--exposure -6` explicitly; brightness was steady in practice.
+  -6 as requested. The setting does take effect despite the warning: -6 to -7 visibly darkened the image.
 - YUY2 at 7.5 fps: `--fourcc MJPG` had no effect until the format was set after the frame size.
 - Wrong first diagnosis of the z offset: blamed the cube marker size (one 1.5% error would explain both the z offset
   and the ruler test). The marker measured 47.0 mm, and z varying with position pointed to the board's orientation.
+- Default video writer: `cv2.VideoWriter(path, MJPG, ...)` silently degraded the clips (up to 6.4 mm pose shift on
+  read-back). The first probe looked fine (0.07 mm) because its synthetic scene had only 4 of 30 frames detected;
+  the scene was fixed before the result was believed. Quality set via the constructor parameter or via FFMPEG
+  environment options did nothing either.
+- `tests/test_live_check.py::test_refuses_null_props` depended on the real `data/props.yaml` holding nulls and failed
+  once the measured values went in. It now builds its own null file.

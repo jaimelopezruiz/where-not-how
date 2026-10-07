@@ -127,13 +127,16 @@ def test_one_board_marker_is_not_enough():
 
 
 def test_refuses_null_props():
-    """data/props.yaml ships with null values; the scripts must refuse them, not substitute nominals."""
-    try:
-        common.load_props(common.DEFAULT_PROPS, require=("board_marker_side",))
-    except SystemExit as e:
-        assert "marker_side_mm" in str(e)
-    else:
-        raise AssertionError("null props were accepted")
+    """A props file with null values must be refused, not filled with nominal sizes."""
+    with tempfile.TemporaryDirectory() as tmp:
+        props = Path(tmp) / "props.yaml"
+        props.write_text("board:\n  marker_side_mm: null\n  gap_mm: null\ncube:\n  marker_side_mm: null\n")
+        try:
+            common.load_props(props, require=("board_marker_side",))
+        except SystemExit as e:
+            assert "marker_side_mm" in str(e)
+        else:
+            raise AssertionError("null props were accepted")
 
 
 def test_cli_on_video_and_size_check():
