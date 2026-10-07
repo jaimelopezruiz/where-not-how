@@ -1,0 +1,2 @@
+n_configs,seed,pos_err_mean_mm,pos_err_median_mm,pos_err_p99_mm,pos_err_max_mm,screw_axis_max_diff,frame_offset_deg,frame_offset_spread_max_deg,ik_n,ik_success_rate,ik_mujoco_err_mean_mm,ik_mujoco_err_max_mm,ik_miss,ik_miss_at_limit
+1000,0,0.001832,0.001848,0.003592,0.003794,9.996e-06,90.000,0.001174,200,1.000,0.5060,4.9173,8,8
