@@ -28,7 +28,7 @@ Statuses: `todo` / `in progress` / `done` / `blocked` / `cut`.
 | ID  | Task                               | Pri | Est.   | Day | Status |
 |-----|------------------------------------|-----|--------|-----|--------|
 | T0  | Repo + environment                 | P0  | 1 h    | Wed | done   |
-| T1  | Data capture                       | P0  | 2–3 h  | Wed | in progress |
+| T1  | Data capture                       | P0  | 2–3 h  | Wed | done   |
 | T2  | Extraction pipeline                | P0  | 3–4 h  | Wed | todo   |
 | T3  | Simulation env                     | P0  | 3–4 h  | Wed/Thu | in progress |
 | T4  | Evaluation harness                 | P0  | 2 h    | Thu | todo   |
@@ -117,12 +117,13 @@ Statuses: `todo` / `in progress` / `done` / `blocked` / `cut`.
   **Done 2026-10-07.** Print scale 0.9406 on both paper axes (sheet 1: 150.5 mm over 160; sheet 3: 186.5 over 198),
   so board marker 56.4 mm, gap 37.6 mm. Object: AirPods box 81 x 81 x 32.5 mm, 80 g, 50 mm print marker
   (47.0 mm measured). Board taped at the far end of the table, pushing area in front of it.
-  Capture settings for everything from here on: `--source 2 --width 1280 --height 720 --exposure -6 --fourcc MJPG`
+  Capture settings for everything from here on: `--source 2 --width 1280 --height 720 --exposure -7 --fourcc MJPG`
+  (-7 with the room light on for recording; -6 was right under the dimmer calibration lighting)
   (30 fps; without MJPG the C270 sends YUY2 at 7.5 fps).
   Live check: box still, std x 0.05-0.11 mm, y 0.06-0.20 mm, yaw 0.02-0.05 deg. Three test pushes (straight x,
   straight y, curve): 0 dropouts. A 300 mm move along a ruler read 304.5 mm (1.5%, likely hand placement).
   Box-top positions at four places fit one plane to < 1 mm, tilted 3.5 deg from the board frame (see C2.1).
-- [ ] **C1.3 Recording protocol.** Webcam fixed (same placement for every clip), angled down 45–60°, whole board and workspace in frame.
+- [x] **C1.3 Recording protocol.** Webcam fixed (same placement for every clip), angled down 45–60°, whole board and workspace in frame.
   30–40 episodes, slow quasi-static pushes, index finger for most:
   straight ×10, curve ×10, turn ×8, natural multi-finger ×5 (labelled), plus 3–5 "letter" traces kept
   aside for the showcase. Hand out of frame for 1 s at start and end of each clip.
@@ -133,6 +134,23 @@ Statuses: `todo` / `in progress` / `done` / `blocked` / `cut`.
   keypress start/stop per episode, `data/raw/ep_XXX.avi` (MJPG, top quality) plus `ep_XXX_t.csv` with per-frame
   `perf_counter()` timestamps, category prompt appending to `data/manifest.csv`, live preview with REC and fps,
   refuses to start if the frame size doesn't match `data/intrinsics.npz`. Verify on a 5 s clip run offline.
+  **Tooling written** (`python -m capture.record`; defaults are the C1.2 capture settings). Keys in the preview
+  window: `s c t m l` sticky category (straight, curve, turn, multi, showcase), `d` discard (still logged), `n` notes,
+  SPACE start/stop, `q` quit. Also writes `ep_XXX_meta.json` (source, size, camera format, exposure read-back, measured
+  fps, sha256 of `intrinsics.npz`, props). REC is refused below `--min-fps 20` (the YUY2 fallback). `--test` writes
+  `test_XXX.*` with no manifest row. Tested offline; **episodes still to record.**
+  **Test:** `tests/test_record.py`: video frames == CSV rows == frames fed, pose round-trip through the written
+  video, frame-size refusal before any file exists, an existing episode is never overwritten.
+  **Done 2026-10-07.** 72 episodes recorded (ep_000-ep_071), 38 kept: straight 10, curve 11, turn 8, multi 5,
+  showcase 4 (L, U, S and a C traced NL -> MR -> FL, which reads as a C from the board side). 34 marked `discard`
+  in the manifest (bad takes, plus 6 removed by the QA pass below). An earlier batch of 6 that broke the one-finger
+  rule is in `data/raw/_practice/` with its own manifest and is not used. Recorded at `--exposure -7`.
+  QA pass over every kept episode (detection on the saved video): box visible in 100% of frames in 37 of 38, no
+  gap over 5 frames mid-push, max frame-to-frame step <= 5 mm, max tilt 11 deg. Discarded by QA: ep_019 and
+  ep_022 (first 2.5-3.1 s of the push hidden), ep_023 (0.9 s hidden mid-push, box moved 57 mm), ep_052 (6.5 s
+  hidden), ep_032 and ep_039 (camera moved while the board was hidden; see decision log). ep_030, 034, 049, 050
+  kept with the note `board occluded ~3-4 s` (camera static, so harmless). In 11 episodes the box was already
+  moving in the first frame, so extraction must not assume a still start.
 
 ## T2: Extraction pipeline (P0)
 
@@ -141,6 +159,11 @@ Statuses: `todo` / `in progress` / `done` / `blocked` / `cut`.
   The board's orientation estimate is the weak part (3.5 deg tilt found in the C1.2 live check), so: fit a plane
   to all box-top positions (the box always lies flat), take the table normal from that fit, and use the board only
   for the origin and the x direction projected onto the plane. Report the plane-fit residual (< 1 mm at C1.2).
+  The camera is not fixed between episodes and occasionally moved within one (decision log, C1.3 QA), so the board
+  pose must be per frame, never one pose per session. Use only frames with all 4 board markers: with 2 markers
+  visible the board depth wanders 10-25 mm with no real motion. Hold or interpolate the 4-marker pose across
+  occlusions (the arm often hides the board for 3-7 s). Per episode, report the board's pixel drift from first to
+  last frame as a QA figure (0.0-0.3 px for a static camera).
 - [ ] **C2.2 Cube pose.** `solvePnP` on the cube marker, transform to table frame, drop to (x, y, yaw).
   Do not push the cube marker through a table-plane homography: it sits at cube height and parallax biases position.
   **Test (C2.1 and C2.2):** synthetic render with a known cube path (reuse `tests/synth.py`); the extracted
@@ -321,6 +344,23 @@ Built before any method so every row of the results table is measured the same w
   residual, i.e. the box moves on a flat plane tilted 3.5 deg from the board frame, and the plane sits 1.7 mm from
   the expected height at the board origin. Cause: the board's orientation estimate (15 cm board, oblique view).
   Effect on (x, y): 1 - cos 3.5 deg = 0.2% plus ~2 mm offset. To be handled in extraction by fitting the plane (C2.1).
+- 2026-10-07: Video writer for `record.py` (C1.3). Plain `cv2.VideoWriter(path, MJPG, ...)` uses the FFMPEG backend at
+  a low fixed quality (29 KB/frame at 1280x720): detection on the read-back clip shifted the pose by up to 6.4 mm,
+  5.3 mm and 1.7 deg against the source frames, far outside the 0.05-0.2 mm static jitter. FFMPEG's quality cannot
+  be set (`writer.set` returns False; `OPENCV_FFMPEG_WRITER_OPTIONS` with qmin/qmax, global_quality, q, qscale all
+  gave byte-identical output). OpenCV's built-in encoder (`CAP_OPENCV_MJPEG`) takes a 0-100 quality through
+  `writer.set(VIDEOWRITER_PROP_QUALITY, q)`: q=100 read back within 0.012 / 0.111 mm and 0.010 deg (258 KB/frame,
+  7.7 MB/s at 30 fps on noisy synthetic frames); q=50 0.03 / 0.20 mm; q=10 0.10 / 0.58 mm. `record.py` selects that
+  backend explicitly at quality 100 and refuses to run if the backend or quality read-back is anything else. The
+  rate depends on image content, so startup prints the rate measured by encoding the first frames.
+- 2026-10-07: Camera movement (C1.3 QA). Tracking the board's marker centres in raw pixels: static to 0.0-0.3 px
+  within most episodes, but the camera shifted between episodes (several jumps of 20-50 px, mostly during
+  discarded retakes) and within ep_018 (21 px), ep_039 (41 px, board 4.7% larger, ~35 mm closer) and a slow 3-7 px
+  creep over ep_030-034. Positions are measured against the board each frame, so movement only corrupts data
+  while the board is hidden: ep_018, 032, 039 discarded for that. Likely cause: the clip-on mount on a free-standing
+  mirror, or the cable, being nudged while resetting the box. The 9 re-recorded episodes all show <= 0.2 px drift.
+- 2026-10-07: Discard criteria for recorded episodes: box hidden for more than 5 frames while moving, start of the
+  push hidden, or board hidden while the camera moved. Board occlusion with a static camera is kept with a note.
 
 ## What didn't work
 
@@ -336,7 +376,18 @@ Built before any method so every row of the results table is measured the same w
 - Camera index 0 (the scripts' default) is another device on this PC: `camera returned no frame`. Found the C270 by
   probing indices 0-3 on DirectShow and MSMF with it plugged and unplugged.
 - Manual exposure: DirectShow reports auto-exposure mode -1 and the lock warning stays, though exposure reads back
-  -6 as requested. Passing `--exposure -6` explicitly; brightness was steady in practice.
+  -6 as requested. The setting does take effect despite the warning: -6 to -7 visibly darkened the image.
 - YUY2 at 7.5 fps: `--fourcc MJPG` had no effect until the format was set after the frame size.
 - Wrong first diagnosis of the z offset: blamed the cube marker size (one 1.5% error would explain both the z offset
   and the ruler test). The marker measured 47.0 mm, and z varying with position pointed to the board's orientation.
+- Default video writer: `cv2.VideoWriter(path, MJPG, ...)` silently degraded the clips (up to 6.4 mm pose shift on
+  read-back). The first probe looked fine (0.07 mm) because its synthetic scene had only 4 of 30 frames detected;
+  the scene was fixed before the result was believed. Quality set via the constructor parameter or via FFMPEG
+  environment options did nothing either.
+- `tests/test_live_check.py::test_refuses_null_props` depended on the real `data/props.yaml` holding nulls and failed
+  once the measured values went in. It now builds its own null file.
+- Recording: 34 of 72 takes discarded. Causes: first batch ignored the one-finger rule (moved to `_practice`),
+  reaching over the board hid it, the hand covered the box marker at the start of a push, and pushing started
+  straight after SPACE instead of after a 1 s still.
+- QA first pass required board and box in the same frame and so reported board occlusions as box dropouts;
+  the box was visible throughout in those episodes. Separating the two changed the verdict on 5 episodes.
