@@ -84,16 +84,19 @@ Statuses: `todo` / `in progress` / `done` / `blocked` / `cut`.
 
 ## T1: Data capture (P0)
 
-- [ ] **C1.1 Camera calibration.** Webcam (C270, fixed focus): set the recording resolution and lock exposure
+- [x] **C1.1 Camera calibration.** Webcam (C270, fixed focus): set the recording resolution and lock exposure
   first. Show a checkerboard full-screen on the monitor (measure one square with a ruler), or use page 3 of the
   print sheet on something rigid. 20–30 sharp frames covering centre, corners and tilts, at the recording
   resolution. `cv2.calibrateCamera` → `intrinsics.npz`. Accept if reprojection error < 1 px.
   Intrinsics don't depend on camera placement, so this can be done before the camera's final position is set.
   Tooling written and tested on synthetic views: `python -m capture.calibrate --square-mm <measured> --width W --height H`
-  (writes `data/intrinsics.npz`; `--from-frames` recomputes from saved frames). **Calibration run still pending the camera.**
-  If using printed page 3: it came out at ~95% scale, so the nominal 22 mm square is ~20.9 mm. Measure across
-  several squares and pass that. Square size only sets the board's metric scale, not the intrinsics.
-- [ ] **C1.2 Props.** Print `make_markers.py`'s sheet at 100% / Actual size; check the 100 mm bar.
+  (writes `data/intrinsics.npz`; `--from-frames` recomputes from saved frames).
+  **Done 2026-10-07.** Page 3 printed at 94.2%: 186.5 mm over 9 squares gives `--square-mm 20.72`. The C270 is
+  DirectShow index 2 (`--source 2`). 25 frames, recomputed with `--fix-k3`: RMS 0.925 px, fx 1462.0, fy 1461.2,
+  cx 701.0, cy 333.7, k1 0.144, k2 0.186. About 0.59 px of the 0.92 is the same at each board corner in every
+  frame (board not perfectly flat). Coverage is centre-heavy with tilts up to 30 deg. Accepted: the live check
+  (C1.2) gives sub-mm jitter and a z check within 2 mm, and positions are measured relative to the board.
+- [x] **C1.2 Props.** Print `make_markers.py`'s sheet at 100% / Actual size; check the 100 mm bar.
   **Printed 2026-10-07: the bar measures 95 mm (printer fit-to-page). Not reprinted:** uniform scaling is harmless
   because every size comes from `props.yaml`. Check it is uniform: board span ID 0→1 (horizontal) and ID 0→2
   (vertical) should both be ~152 mm and agree within ~0.5 mm, else reprint (anisotropic scale skews pose).
@@ -110,7 +113,15 @@ Statuses: `todo` / `in progress` / `done` / `blocked` / `cut`.
   Live check before recording: cube still → pose jitter ≲ 1 mm; during a push, no marker dropouts
   (push low on the side face so the finger doesn't cover the top marker).
   Tooling: `python -m capture.live_check --width W --height H` (needs `data/intrinsics.npz` and measured
-  values in `data/props.yaml`, which currently holds `null` placeholders; the scripts refuse to run on them).
+  values in `data/props.yaml`; the scripts refuse to run on nulls).
+  **Done 2026-10-07.** Print scale 0.9406 on both paper axes (sheet 1: 150.5 mm over 160; sheet 3: 186.5 over 198),
+  so board marker 56.4 mm, gap 37.6 mm. Object: AirPods box 81 x 81 x 32.5 mm, 80 g, 50 mm print marker
+  (47.0 mm measured). Board taped at the far end of the table, pushing area in front of it.
+  Capture settings for everything from here on: `--source 2 --width 1280 --height 720 --exposure -6 --fourcc MJPG`
+  (30 fps; without MJPG the C270 sends YUY2 at 7.5 fps).
+  Live check: box still, std x 0.05-0.11 mm, y 0.06-0.20 mm, yaw 0.02-0.05 deg. Three test pushes (straight x,
+  straight y, curve): 0 dropouts. A 300 mm move along a ruler read 304.5 mm (1.5%, likely hand placement).
+  Box-top positions at four places fit one plane to < 1 mm, tilted 3.5 deg from the board frame (see C2.1).
 - [ ] **C1.3 Recording protocol.** Webcam fixed (same placement for every clip), angled down 45–60°, whole board and workspace in frame.
   30–40 episodes, slow quasi-static pushes, index finger for most:
   straight ×10, curve ×10, turn ×8, natural multi-finger ×5 (labelled), plus 3–5 "letter" traces kept
@@ -118,11 +129,18 @@ Statuses: `todo` / `in progress` / `done` / `blocked` / `cut`.
   Log `data/manifest.csv` (id, category, notes). Upload raw videos to a Hugging Face dataset (CC BY 4.0,
   plain files, not LeRobot format); keep only processed data in git. Not critical path: a sample upload is
   enough until Friday.
+  Tooling to write: `capture/record.py`, same camera options and exposure lock as live_check (MJPG default),
+  keypress start/stop per episode, `data/raw/ep_XXX.avi` (MJPG, top quality) plus `ep_XXX_t.csv` with per-frame
+  `perf_counter()` timestamps, category prompt appending to `data/manifest.csv`, live preview with REC and fps,
+  refuses to start if the frame size doesn't match `data/intrinsics.npz`. Verify on a 5 s clip run offline.
 
 ## T2: Extraction pipeline (P0)
 
 - [ ] **C2.1 Table frame.** Detect board each frame, `solvePnP` → camera pose in table frame.
   Per-frame pose absorbs small tripod shake.
+  The board's orientation estimate is the weak part (3.5 deg tilt found in the C1.2 live check), so: fit a plane
+  to all box-top positions (the box always lies flat), take the table normal from that fit, and use the board only
+  for the origin and the x direction projected onto the plane. Report the plane-fit residual (< 1 mm at C1.2).
 - [ ] **C2.2 Cube pose.** `solvePnP` on the cube marker, transform to table frame, drop to (x, y, yaw).
   Do not push the cube marker through a table-plane homography: it sits at cube height and parallax biases position.
   **Test (C2.1 and C2.2):** synthetic render with a known cube path (reuse `tests/synth.py`); the extracted
@@ -148,6 +166,7 @@ Statuses: `todo` / `in progress` / `done` / `blocked` / `cut`.
   (1000 random configs: max 0.0038 mm, mean 0.0018 mm). Tables in `results/`.
 - [ ] **C3.2 Scene.** Table, cube with measured size and mass, small capsule pusher at the end effector
   for clean single-point contact. Start friction values, then tune: cube must slide, not tip or stick.
+  The object is a box, not a cube (81 x 81 x 32.5 mm): add `height_mm` to `load_props` and use it for the geom.
   **Test:** a constant push makes the cube slide without tipping.
 - [ ] **C3.3 EE controller.** Action = planar EE velocity at fixed height → target → DLS IK → position actuators.
   SO-101: your library, position-only IK. Panda: MuJoCo site Jacobian with the same damped pseudo-inverse.
@@ -290,6 +309,18 @@ Built before any method so every row of the results table is measured the same w
   could never fail. `tests/test_kinematics_vendored.py` wraps both with real assertions (one-line change to
   `verify_jac` to return its error; `test_ik` is called unmodified). Slow: the full IK sweep (~24 s); a fast subset
   of it (noise <= 1.0, same seeds, ~4 s) is in the commit gate.
+- 2026-10-07: Object is an AirPods box, 81 x 81 x 32.5 mm, 80 g: square top fits the 50 mm marker, height/width
+  0.40 so it slides without tipping. `props.yaml` gains `height_mm` (not yet read by `load_props`).
+- 2026-10-07: Calibration recomputed with `--fix-k3`: identical RMS (0.925 vs 0.924 px) and k2 drops from 0.88 to
+  0.19, so the free k3 was only cancelling k2. Accepted at 0.925 px rather than recalibrating with a stiffer board.
+- 2026-10-07: `open_capture` now sets the format after the frame size. On DirectShow, setting the size after the
+  FOURCC reset it to YUY2, which the C270 delivers at 7.5 fps at 1280x720; MJPG gives 29.9 fps. Static jitter
+  with MJPG stays sub-mm.
+- 2026-10-07: Tracking accuracy (C1.2 live check). Static std <= 0.2 mm and 0.05 deg. Box-top z ranged -17 to -26 mm
+  across the table against -32.5 expected; the four positions fit z = -34.2 - 0.057x - 0.022y with < 1 mm
+  residual, i.e. the box moves on a flat plane tilted 3.5 deg from the board frame, and the plane sits 1.7 mm from
+  the expected height at the board origin. Cause: the board's orientation estimate (15 cm board, oblique view).
+  Effect on (x, y): 1 - cos 3.5 deg = 0.2% plus ~2 mm offset. To be handled in extraction by fitting the plane (C2.1).
 
 ## What didn't work
 
@@ -302,3 +333,10 @@ Built before any method so every row of the results table is measured the same w
   orientation.
 - Cube-marker pose accuracy on synthetic renders is limited by the ArUco corner detector to a few mm in y and z at a
   45 deg view (jitter is far smaller). Own `cornerSubPix` pass cut it by about a third; not adopted without real images.
+- Camera index 0 (the scripts' default) is another device on this PC: `camera returned no frame`. Found the C270 by
+  probing indices 0-3 on DirectShow and MSMF with it plugged and unplugged.
+- Manual exposure: DirectShow reports auto-exposure mode -1 and the lock warning stays, though exposure reads back
+  -6 as requested. Passing `--exposure -6` explicitly; brightness was steady in practice.
+- YUY2 at 7.5 fps: `--fourcc MJPG` had no effect until the format was set after the frame size.
+- Wrong first diagnosis of the z offset: blamed the cube marker size (one 1.5% error would explain both the z offset
+  and the ruler test). The marker measured 47.0 mm, and z varying with position pointed to the board's orientation.

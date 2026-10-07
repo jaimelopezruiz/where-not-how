@@ -1,9 +1,8 @@
-# Measured prop dimensions (C1.2). Fill every value with what you measured with the ruler and
-# scale, not the nominal print size. Millimetres and grams. Scripts refuse to run on null values.
-board:                      # 2x2 GridBoard, DICT_4X4_50, IDs 0-3
-  marker_side_mm: null      # black-border to black-border side of one printed marker
-  gap_mm: null              # white gap between neighbouring markers
+board:
+  marker_side_mm: 56.4    # 60 × 0.9406  (factor comes from
+  gap_mm: 37.6            # 40 × 0.9406   manually measuring)
 cube:
-  marker_side_mm: null      # ID 10, black-border to black-border side
-  side_mm: null             # cube edge length
-  mass_g: null
+     marker_side_mm: 47.0    # manual measurement
+     side_mm: 81.0           # AirPods box, square top
+     height_mm: 32.5         # not read by the scripts yet; sim needs it (C3.2)
+     mass_g: 80.0
