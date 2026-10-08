@@ -1,11 +1,18 @@
 """Tests for C3.4: workspace map (human table frame → robot EE frame).
 
 Run:  python -m pytest tests/test_workspace.py -v
+      python -m pytest tests/test_workspace.py::test_fit_on_train_data -v -s  (prints report)
 """
+import json
+import pathlib
+
 import numpy as np
 import pytest
 
 from control.workspace import WorkspaceMap, generate_synthetic_paths
+
+_PROCESSED = pathlib.Path("data/processed")
+_SPLITS    = pathlib.Path("data/splits.json")
 
 
 def test_generate_synthetic_paths_shapes():
@@ -79,3 +86,49 @@ def test_fit_function_exists():
     assert hasattr(ws_map, "scale")
     assert hasattr(ws_map, "offset_xy")
     assert ws_map.offset_xy.shape == (2,)
+
+
+def test_fit_on_train_data():
+    """Fit WorkspaceMap on train split only; report scale and out-of-reach count.
+
+    Prints a one-line summary per trajectory and a totals line.  Run with -s to see it.
+    Skipped if data/processed/ is not present (CI without recorded data).
+    """
+    if not _SPLITS.exists() or not _PROCESSED.exists():
+        pytest.skip("data/splits.json or data/processed/ not found")
+
+    with open(_SPLITS) as f:
+        splits = json.load(f)
+    train_eps = splits["train"]
+
+    # Load train trajectories (human table frame, metres)
+    trajectories = []
+    for ep in train_eps:
+        ep_data = np.load(_PROCESSED / f"{ep}.npz")
+        trajectories.append(ep_data["cube_xy_yaw"][:, :2].copy())
+
+    # Sample robot reachable positions at push height (same method as from_robot_reach)
+    ws_map, reachable_xy = WorkspaceMap.from_robot_reach(n_samples=4000, seed=42)
+
+    # Re-fit on actual train data (from_robot_reach uses synthetic paths as stand-in)
+    ws_map_real = WorkspaceMap.fit(trajectories, reachable_xy)
+
+    print(f"\nWorkspaceMap fit on {len(train_eps)} train episodes")
+    print(f"  scale  = {ws_map_real.scale:.4f}")
+    print(f"  offset = ({ws_map_real.offset_xy[0]:.4f}, {ws_map_real.offset_xy[1]:.4f}) m")
+    print(f"  reachable sample at push height: {len(reachable_xy)} configs")
+    print()
+
+    n_partial = 0
+    for ep, traj in zip(train_eps, trajectories):
+        frac = ws_map_real.reachable_fraction(traj, reachable_xy)
+        tag = "" if frac >= 0.95 else "  <-- partial"
+        print(f"  {ep}: {frac * 100:5.1f}% reachable{tag}")
+        if frac < 1.0:
+            n_partial += 1
+
+    print(f"\n  {n_partial}/{len(train_eps)} train trajectories have points outside reach")
+
+    # scale must be ≤ 1 and the map must exist
+    assert 0.0 < ws_map_real.scale <= 1.0
+    assert ws_map_real.offset_xy.shape == (2,)
