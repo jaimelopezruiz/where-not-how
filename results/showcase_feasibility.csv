@@ -1,0 +1,5 @@
+id,n_points,feasible_fraction,feasible,min_cube_radius_m,r_min_cube_m
+ep_049,455,1.0000,True,0.1808,0.1468
+ep_050,585,1.0000,True,0.1727,0.1468
+ep_055,538,1.0000,True,0.1779,0.1468
+ep_071,479,1.0000,True,0.1662,0.1468
