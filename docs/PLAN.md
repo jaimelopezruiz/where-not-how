@@ -385,12 +385,15 @@ object-aware replay (that is T7).
   `residual_s0` (stopped at 1M, 17:05, to free the CPU for C6.7): eval 8/8 at every point, rollout success
   0.98-1.0; train-eval mean deviation 0.52 cm untrained, 0.56-0.71 cm from 200k to 900k (one eval at 500k read 1.00,
   an outlier on 8 episodes); episodes 146 -> 103 steps. It learned to finish about 30% sooner, not to track better.
-- [ ] **C6.7 Deviation-weighted reward for the residual run.** `deviation_weight` on PushTrackEnv (None = C6.1
+- [x] **C6.7 Deviation-weighted reward for the residual run.** `deviation_weight` on PushTrackEnv (None = C6.1
   reward): the per-step `0.1 x lateral` term becomes `w x (lateral / 1 cm) x (box displacement / path length)`,
   which sums to about w x mean deviation (cm), the metric's weighting, and does not pay for speed. w = 5, fixed in
   advance: 0.5 cm of extra mean deviation costs 2.5, about twice the ~1.2 that finishing 146 -> 108 steps earns
   through the discounted +10 bonus; the bonus equals 2 cm of mean deviation, the success threshold. Run
-  `residual_dev5`, 3M steps. In progress (session in t3, branch t6-reward).
+  `residual_dev5`, 3M steps. **Code done 2026-10-08** (`sim/push_env.py`, `rl/train_ppo.py`, `rl/train_residual.py`,
+  `tests/test_push_env_reward.py`): None reproduces the C6.1 reward step for step; a box pushed at a constant 1 cm
+  offset accumulates 5 x 1.0 within 10%; a stationary offset box gets 0. Sanity (100k, 4 envs): eval 8/8, 0.52-0.58 cm,
+  143-147 steps. `residual_dev5` launched ~17:15 from t3. w is not retuned after seeing its curve.
 - [ ] **C6.6 Time-indexed reward ablation (P2).** The same PPO setup with a time-indexed tracking reward
   (reference point at time t, not at progress p); compare on the test split. Turns claim (4) from a cited design
   choice into a result.
@@ -619,6 +622,9 @@ Rotating the cube needs pusher contact-mode switching, so yaw stays P2.
   C6.1 reward; it never reached the regime where this matters. Missed when C6.1 and C6.5 were reviewed.
 - 2026-10-08: Showcase letter traces run once with the frozen workspace map and scripted pusher (C8.1), no tuning;
   the final showcase controller is picked Fri from test results only.
+- 2026-10-08: Results-table rule, fixed before any RL test evaluation: each run is evaluated once on test with its
+  final model: residual_dev5 (3M; the residual row), residual_s0 at 1M (the C6.1-reward comparison), full_s0 at 10M
+  (plain PPO). No checkpoint selection; whatever comes out is reported.
 
 ## What didn't work
 
