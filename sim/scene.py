@@ -134,8 +134,8 @@ def build_push_scene_xml(props, robot_base_pos=(0.0, 0.0, 0.0)):
     # Overhead camera for rendering
     cam = ET.Element("camera")
     cam.set("name", "overhead")
-    cam.set("pos", "0.2 0.2 0.8")
-    cam.set("quat", "0.924 -0.383 0 0")   # ~45 deg tilt, similar to recording angle
+    cam.set("pos", "0.3 0.0 0.7")
+    cam.set("xyaxes", "0 -1 0 1 0 0")     # straight down over the workspace; robot base at the bottom, +x up
     worldbody.insert(1, cam)
 
     # Cube free body (default position; env overrides at reset)
@@ -154,6 +154,13 @@ def build_push_scene_xml(props, robot_base_pos=(0.0, 0.0, 0.0)):
     # The capsule is placed at that site; contype/conaffinity explicitly set to 1
     # because the so101_new_calib default class sets contype=0 for all geoms.
     gripper = next((b for b in root.iter("body") if b.get("name") == "gripper"), None)
+    # The gripper and jaw collision meshes are up to ~3 cm wide and would hit the cube before the
+    # capsule does: switch them off so the capsule is the only contact surface at the end effector.
+    for b in root.iter("body"):
+        if b.get("name") in ("gripper", "moving_jaw_so101_v1"):
+            for g in b.findall("geom"):
+                g.set("contype", "0")
+                g.set("conaffinity", "0")
     if gripper is not None:
         pcap = ET.SubElement(gripper, "geom")
         for k, v in [("name", "pusher_cap"), ("type", "capsule"), ("size", "0.006 0.008"),

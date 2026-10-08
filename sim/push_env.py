@@ -169,6 +169,26 @@ class PushTrackEnv(gym.Env):
     # Workspace centre
     # ------------------------------------------------------------------
 
+    @property
+    def episode_ids(self):
+        """Episode ids of the split (None for synthetic or explicit paths)."""
+        return None if self._episode_ids is None else list(self._episode_ids)
+
+    @property
+    def reference_path(self):
+        """Reference path of the current episode, robot frame (copy)."""
+        return self._path.copy()
+
+    @property
+    def dt(self):
+        """Seconds per env step."""
+        return float(self._model.opt.timestep * self.n_steps_per_action)
+
+    @property
+    def cube_xy_yaw(self):
+        """Cube pose from the simulator state: (xy copy, yaw)."""
+        return self._cube_xy_yaw()
+
     def _find_workspace_centre(self):
         """Estimate the centroid of FK positions reachable at push height."""
         from control.kinematics.core import Adjoint, FKinBody, TransInv
@@ -227,6 +247,8 @@ class PushTrackEnv(gym.Env):
         idx = int(self.np_random.integers(len(self._paths)))
         if options and "episode" in options:
             idx = int(options["episode"])
+        if options and "episode_id" in options:
+            idx = self._episode_ids.index(options["episode_id"])   # e.g. "ep_005"; split envs only
         self._path = self._place_path(self._paths[idx])
         yaw0 = self._yaw0[idx]
         diffs = np.diff(self._path, axis=0)
@@ -309,6 +331,11 @@ class PushTrackEnv(gym.Env):
         q = np.array([self._data.qpos[qadr] for qadr in self._arm_jnt_qadr])
         self._ctrl._q = q  # direct write; EEController._q is the warm-start
 
+    def _ee_xy(self):
+        """EE position from the measured joint angles (not the last IK command, which leads it)."""
+        q = np.array([self._data.qpos[qadr] for qadr in self._arm_jnt_qadr])
+        return self._ctrl.ee_pose(q=q)[:2, 3]
+
     def _cube_xy_yaw(self):
         pos  = self._data.xpos[self._cube_id]
         quat = self._data.xquat[self._cube_id]   # qw, qx, qy, qz
@@ -331,7 +358,7 @@ class PushTrackEnv(gym.Env):
         return max(self._max_arc_progress, frac)
 
     def _get_obs(self):
-        ee_xy = self._ctrl.ee_pose()[:2, 3]
+        ee_xy = self._ee_xy()
         cube_xy, yaw = self._cube_xy_yaw()
         sin_y, cos_y = float(np.sin(yaw)), float(np.cos(yaw))
 
@@ -361,7 +388,7 @@ class PushTrackEnv(gym.Env):
         dists = np.linalg.norm(self._path - cube_xy, axis=1)
         pt = self._path[int(np.argmin(dists))]
         lateral   = float(np.linalg.norm(cube_xy - pt))
-        ee_xy     = self._ctrl.ee_pose()[:2, 3]
+        ee_xy     = self._ee_xy()
         reach     = float(np.linalg.norm(ee_xy - cube_xy))
         final_err = float(np.linalg.norm(cube_xy - self._path[-1]))
         # Arc-length success: same threshold as T4's eval/metrics.py

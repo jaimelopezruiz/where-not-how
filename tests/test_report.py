@@ -171,8 +171,73 @@ def test_write_gif_greyscale_frames():
         assert p.exists()
 
 
-# ── evaluate stub ─────────────────────────────────────────────────────────────
+# ── evaluate ──────────────────────────────────────────────────────────────────
 
-def test_evaluate_raises_not_implemented():
-    with pytest.raises(NotImplementedError):
-        evaluate(lambda obs: np.zeros(2), "test")
+class _StubEnv:
+    """PushTrack-like env on explicit paths: the cube follows the last action exactly (no physics)."""
+    def __init__(self, paths, ids=None):
+        self._paths, self.episode_ids, self.dt, self.cube = paths, ids, 0.05, None
+
+    def reset(self, options=None):
+        self._i = options["episode_id"] and self.episode_ids.index(options["episode_id"])             if "episode_id" in options else options["episode"]
+        self.path, self.k = self._paths[self._i], 0
+        return np.r_[self.path[0], self.path[0], 0.0, 1.0], {}
+
+    @property
+    def reference_path(self):
+        return self.path.copy()
+
+    @property
+    def cube_xy_yaw(self):
+        return self.path[self.k].copy(), 0.0
+
+    def step(self, action):
+        self.k = min(self.k + 1, len(self.path) - 1)
+        done = self.k == len(self.path) - 1
+        return np.r_[self.path[self.k], self.path[self.k], 0.0, 1.0], 0.0, done, False, {}
+
+
+class _FollowRef:
+    def reset(self, ref_xy):
+        self.ref = ref_xy
+
+    def __call__(self, obs):
+        return np.zeros(2)
+
+
+def test_evaluate_scores_stub_env_and_resets_controller():
+    paths = [np.column_stack([np.linspace(0, 0.3, 40), np.zeros(40)]),
+             np.column_stack([np.linspace(0, 0.2, 30), np.linspace(0, 0.1, 30)])]
+    env = _StubEnv(paths, ids=["ep_000", "ep_005"])
+    ctrl = _FollowRef()
+    res = evaluate(ctrl, env=env, method="stub")
+    assert [r["id"] for r in res] == ["ep_000", "ep_005"]
+    assert all(r["method"] == "stub" and r["success"] for r in res)
+    assert all(r["mean_deviation_cm"] == pytest.approx(0.0, abs=1e-9) for r in res)
+    assert res[0]["category"] == "straight"                       # from data/manifest.csv
+    assert res[0]["steps"] == 39 and res[0]["completion_time"] == pytest.approx(37 * 0.05)   # first step within 2 cm of the end (0.3 m path, 39 steps)
+    assert ctrl.ref == pytest.approx(paths[1])                    # reset() got the last episode's reference
+    with tempfile.TemporaryDirectory() as d:
+        write_results_csv(res, Path(d) / "r.csv")
+        plot_overlay(res, Path(d) / "o.png")
+        header = (Path(d) / "r.csv").read_text().splitlines()[0]
+        assert header.startswith("id,category,method,progress")
+        assert (Path(d) / "o.png").exists()
+
+
+def test_evaluate_real_env_on_synthetic_path():
+    """Plumbing through PushTrackEnv: reset by path index, step, metrics. Cube never touched, so it fails."""
+    from sim.push_env import PushTrackEnv
+    path = np.column_stack([np.linspace(0.30, 0.40, 20), np.full(20, 0.10)])
+    env = PushTrackEnv(paths=[path], max_episode_steps=3)
+    res = evaluate(lambda obs: np.zeros(2), env=env, method="idle")
+    env.close()
+    assert len(res) == 1 and res[0]["id"] == "path_0" and res[0]["steps"] == 3
+    assert res[0]["achieved_xy"].shape == (4, 2)
+    assert res[0]["progress"] == pytest.approx(0.0, abs=1e-3) and not res[0]["success"]
+    assert res[0]["achieved_xy"][0] == pytest.approx(res[0]["ref_xy"][0], abs=1e-4)   # cube starts on the path
+
+
+def test_evaluate_needs_split_or_env():
+    with pytest.raises(ValueError):
+        evaluate(lambda obs: np.zeros(2))

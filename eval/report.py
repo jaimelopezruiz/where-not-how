@@ -1,7 +1,8 @@
-"""C4.2: results table, trajectory overlay plots, side-by-side GIF writer, and evaluate() stub.
+"""C4.2: results table, trajectory overlay plots, side-by-side GIF writer, and evaluate().
 
-evaluate() is the interface that connects a controller to the PushTrack-v0 gymnasium env
-from T3. The env wiring is a TODO; everything else in this module is independent of the sim.
+evaluate() connects a controller to the PushTrack-v0 gymnasium env (one rollout per episode of a
+split, scored with eval.metrics against the mapped reference). The rest of this module is independent
+of the sim; the env is imported only when evaluate() needs it.
 """
 import csv
 from pathlib import Path
@@ -13,7 +14,7 @@ matplotlib.use("Agg")   # non-interactive; must precede pyplot import
 import matplotlib.pyplot as plt
 import numpy as np
 
-from eval.metrics import category_summary
+from eval.metrics import category_summary, compute_metrics
 
 
 # ── Results CSV ──────────────────────────────────────────────────────────────
@@ -180,32 +181,92 @@ def write_gif(
 
 # ── Evaluate interface ────────────────────────────────────────────────────────
 
-def evaluate(controller: Callable, split: str) -> list:
-    """Run controller on every episode in split and return per-episode metrics.
+def episode_categories() -> dict:
+    """Episode id -> category from data/manifest.csv."""
+    path = Path(__file__).resolve().parent.parent / "data" / "manifest.csv"
+    with open(path, newline="") as f:
+        return {row["id"]: row.get("category", "") for row in csv.DictReader(f)}
+
+
+def rollout(env, controller: Callable, episode, method: str = "", categories: "dict | None" = None) -> dict:
+    """One episode: reset the env on it, run the controller to termination, score the cube trajectory.
+
+    episode : episode id (split envs) or integer path index (envs built from explicit paths).
+    The controller is called as controller(obs) -> action; if it has reset(ref_xy) it is called first
+    with the episode's reference path (robot frame), so progress-tracking controllers start clean.
+    """
+    options = {"episode": episode} if isinstance(episode, (int, np.integer)) else {"episode_id": episode}
+    obs, _ = env.reset(options=options)
+    ref_xy = env.reference_path
+    if hasattr(controller, "reset"):
+        controller.reset(ref_xy)
+    achieved = [np.asarray(env.cube_xy_yaw[0], dtype=float)]
+    done = False
+    while not done:
+        obs, _, terminated, truncated, _ = env.step(controller(obs))
+        achieved.append(np.asarray(env.cube_xy_yaw[0], dtype=float))
+        done = terminated or truncated
+    achieved_xy = np.array(achieved)
+    t = np.arange(len(achieved_xy)) * env.dt
+    ep_id = episode if isinstance(episode, str) else f"path_{int(episode)}"
+    categories = episode_categories() if categories is None else categories
+    return {"id": ep_id, "category": categories.get(ep_id, ""), "method": method,
+            **compute_metrics(ref_xy, achieved_xy, t),
+            "ref_xy": ref_xy, "achieved_xy": achieved_xy, "steps": len(achieved_xy) - 1}
+
+
+_worker = {}
+
+
+def _init_worker(split, env_kwargs):
+    from sim.push_env import PushTrackEnv
+    _worker["env"] = PushTrackEnv(split=split, **env_kwargs)
+    _worker["categories"] = episode_categories()
+
+
+def _worker_rollout(controller, episode, method):
+    return rollout(_worker["env"], controller, episode, method, _worker["categories"])
+
+
+def evaluate(controller: Callable, split: "str | None" = None, method: str = "", env=None,
+             workers: int = 1, env_kwargs: "dict | None" = None) -> list:
+    """Run the controller once on every episode of a split and return per-episode metrics.
 
     Parameters
     ----------
-    controller : callable  obs -> action (planar EE velocity, as in C3.3)
-    split      : one of 'train', 'test', 'showcase'
+    controller : callable obs -> action (EE displacement per step, as in PushTrack-v0), optionally with
+                 reset(ref_xy). With workers > 1 it is pickled once per episode, so it must be picklable
+                 and each episode starts from the state it has when passed in.
+    split      : 'train', 'test' or 'showcase' (builds PushTrackEnv(split=split))
+    method     : label written to the method column
+    env        : an existing PushTrackEnv to use instead (explicit paths, tests); runs every path in it
+    workers    : number of processes (split mode only); episodes are independent, rollouts are slow
 
     Returns
     -------
-    list of dicts, one per episode, with keys:
-      id, category, method, progress, mean_deviation_cm, final_error_cm,
-      success, completion_time
-
-    TODO: wire to PushTrack-v0 gymnasium env from T3 (sim/env.py) when that
-    branch merges. Steps:
-      1. Load data/splits.json to get episode ids for the requested split.
-      2. For each episode id:
-         a. gym.make("PushTrack-v0", episode=ep_id) and reset().
-         b. Roll out: obs, done = env.reset(), False
-            while not done: obs, _, done, _, info = env.step(controller(obs))
-         c. Retrieve ref_xy and achieved_xy from info (or env attributes).
-         d. Call compute_metrics(ref_xy, achieved_xy, t) and append to results.
-      3. Return results list.
+    list of dicts, one per episode in split order: id, category, method, progress, mean_deviation_cm,
+    final_error_cm, success, completion_time, steps, plus ref_xy and achieved_xy (metres, robot frame)
+    for the overlay plot. write_results_csv ignores the arrays.
     """
-    raise NotImplementedError(
-        "evaluate() requires PushTrack-v0 from T3 (sim/env.py). "
-        "Connect the env here when T3 merges into main."
-    )
+    env_kwargs = env_kwargs or {}
+    if env is not None:
+        ids = env.episode_ids or list(range(len(env._paths)))
+        cats = episode_categories()
+        return [rollout(env, controller, ep, method, cats) for ep in ids]
+    if split is None:
+        raise ValueError("pass a split or an env")
+    from sim.push_env import PushTrackEnv
+    if workers <= 1:
+        env = PushTrackEnv(split=split, **env_kwargs)
+        try:
+            return evaluate(controller, method=method, env=env)
+        finally:
+            env.close()
+    from concurrent.futures import ProcessPoolExecutor
+    probe = PushTrackEnv(split=split, **env_kwargs)
+    ids = probe.episode_ids
+    probe.close()
+    with ProcessPoolExecutor(max_workers=min(workers, len(ids)), initializer=_init_worker,
+                             initargs=(split, env_kwargs)) as pool:
+        futures = [pool.submit(_worker_rollout, controller, ep, method) for ep in ids]
+        return [f.result() for f in futures]
