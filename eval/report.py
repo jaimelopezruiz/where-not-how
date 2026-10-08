@@ -188,12 +188,19 @@ def episode_categories() -> dict:
         return {row["id"]: row.get("category", "") for row in csv.DictReader(f)}
 
 
-def rollout(env, controller: Callable, episode, method: str = "", categories: "dict | None" = None) -> dict:
-    """One episode: reset the env on it, run the controller to termination, score the cube trajectory.
+def rollout(env, controller: Callable, episode, method: str = "", categories: "dict | None" = None,
+            until_done: bool = True) -> dict:
+    """One episode: reset the env on it, run the controller to the end, score the cube trajectory.
 
     episode : episode id (split envs) or integer path index (envs built from explicit paths).
     The controller is called as controller(obs) -> action; if it has reset(ref_xy) it is called first
     with the episode's reference path (robot frame), so progress-tracking controllers start clean.
+
+    until_done : True (the evaluation protocol) keeps running past the env's first success until the
+                 controller reports done (a truthy ``done`` attribute, checked after it chooses its
+                 action) or the step limit, so the final error is where the box actually ends. False
+                 stops at the env's first success, as in training. A controller without a ``done``
+                 attribute cannot say when it is finished, so the env's termination ends its episode.
     """
     options = {"episode": episode} if isinstance(episode, (int, np.integer)) else {"episode_id": episode}
     obs, _ = env.reset(options=options)
@@ -201,11 +208,15 @@ def rollout(env, controller: Callable, episode, method: str = "", categories: "d
     if hasattr(controller, "reset"):
         controller.reset(ref_xy)
     achieved = [np.asarray(env.cube_xy_yaw[0], dtype=float)]
-    done = False
-    while not done:
-        obs, _, terminated, truncated, _ = env.step(controller(obs))
+    self_stopping = until_done and hasattr(controller, "done")
+    while True:
+        action = controller(obs)
+        if self_stopping and controller.done:
+            break
+        obs, _, terminated, truncated, _ = env.step(action)
         achieved.append(np.asarray(env.cube_xy_yaw[0], dtype=float))
-        done = terminated or truncated
+        if truncated or (terminated and not self_stopping):
+            break
     achieved_xy = np.array(achieved)
     t = np.arange(len(achieved_xy)) * env.dt
     ep_id = episode if isinstance(episode, str) else f"path_{int(episode)}"
@@ -224,12 +235,12 @@ def _init_worker(split, env_kwargs):
     _worker["categories"] = episode_categories()
 
 
-def _worker_rollout(controller, episode, method):
-    return rollout(_worker["env"], controller, episode, method, _worker["categories"])
+def _worker_rollout(controller, episode, method, until_done):
+    return rollout(_worker["env"], controller, episode, method, _worker["categories"], until_done)
 
 
 def evaluate(controller: Callable, split: "str | None" = None, method: str = "", env=None,
-             workers: int = 1, env_kwargs: "dict | None" = None) -> list:
+             workers: int = 1, env_kwargs: "dict | None" = None, until_done: bool = True) -> list:
     """Run the controller once on every episode of a split and return per-episode metrics.
 
     Parameters
@@ -240,7 +251,9 @@ def evaluate(controller: Callable, split: "str | None" = None, method: str = "",
     split      : 'train', 'test' or 'showcase' (builds PushTrackEnv(split=split))
     method     : label written to the method column
     env        : an existing PushTrackEnv to use instead (explicit paths, tests); runs every path in it
-    workers    : number of processes (split mode only); episodes are independent, rollouts are slow
+    workers    : number of processes (split mode only); episodes are independent
+    until_done : run each episode until the controller reports done or the step limit (the protocol), not
+                 until the env's first success; see rollout()
 
     Returns
     -------
@@ -252,14 +265,14 @@ def evaluate(controller: Callable, split: "str | None" = None, method: str = "",
     if env is not None:
         ids = env.episode_ids or list(range(len(env._paths)))
         cats = episode_categories()
-        return [rollout(env, controller, ep, method, cats) for ep in ids]
+        return [rollout(env, controller, ep, method, cats, until_done) for ep in ids]
     if split is None:
         raise ValueError("pass a split or an env")
     from sim.push_env import PushTrackEnv
     if workers <= 1:
         env = PushTrackEnv(split=split, **env_kwargs)
         try:
-            return evaluate(controller, method=method, env=env)
+            return evaluate(controller, method=method, env=env, until_done=until_done)
         finally:
             env.close()
     from concurrent.futures import ProcessPoolExecutor
@@ -268,5 +281,5 @@ def evaluate(controller: Callable, split: "str | None" = None, method: str = "",
     probe.close()
     with ProcessPoolExecutor(max_workers=min(workers, len(ids)), initializer=_init_worker,
                              initargs=(split, env_kwargs)) as pool:
-        futures = [pool.submit(_worker_rollout, controller, ep, method) for ep in ids]
+        futures = [pool.submit(_worker_rollout, controller, ep, method, until_done) for ep in ids]
         return [f.result() for f in futures]
