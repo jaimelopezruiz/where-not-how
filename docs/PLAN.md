@@ -47,7 +47,7 @@ Statuses: `todo` / `in progress` / `done` / `blocked` / `cut`.
 | T5  | Scripted pusher                    | P0  | 3 h    | Thu | done   |
 | T6  | RL policy                          | P1  | 6–8 h  | Thu/Fri | in progress (C6.5 training) |
 | T7  | Hand-replay baseline               | P1  | 2 h    | Thu | cut (C7.1 coverage gate) |
-| T8  | Showcase trajectory                | P1  | 1 h    | Fri | todo   |
+| T8  | Showcase trajectory                | P1  | 1 h    | Fri | in progress (pipeline done) |
 | T9  | Data-scaling curve                 | P1  | compute| Thu night | cut  |
 | T10 | Yaw tracking                       | P2  | 2–3 h  | Fri | cut    |
 | T11 | README / presentation              | P0  | 4–5 h  | Fri | todo   |
@@ -143,6 +143,9 @@ Statuses: `todo` / `in progress` / `done` / `blocked` / `cut`.
   Log `data/manifest.csv` (id, category, notes). Upload raw videos to a Hugging Face dataset (CC BY 4.0,
   plain files, not LeRobot format); keep only processed data in git. Not critical path: a sample upload is
   enough until Friday.
+  **Uploaded 2026-10-08:** the 38 kept episodes (`.avi`, `_t.csv`, `_meta.json`), `calib/` and `manifest.csv` to
+  https://huggingface.co/datasets/JaimeLR/where-not-how-pushes (CC BY 4.0). Discarded takes, `test_*` clips and
+  `_practice/` are not uploaded; the manifest lists the discards.
   Tooling to write: `capture/record.py`, same camera options and exposure lock as live_check (MJPG default),
   keypress start/stop per episode, `data/raw/ep_XXX.avi` (MJPG, top quality) plus `ep_XXX_t.csv` with per-frame
   `perf_counter()` timestamps, category prompt appending to `data/manifest.csv`, live preview with REC and fps,
@@ -363,6 +366,11 @@ object-aware replay (that is T7).
   success ~1%, return flat near -9.5 since 250k, deterministic eval does not move the box yet.
   At 1.1M (15:20): rollout success 2-4% (a 5-7% spell at 790-890k fell back to 0 by 950k), return about -8;
   deterministic eval 0/8 at every checkpoint, and at 0, 200k, 300k, 600k and 900k the pusher never touches the box.
+  At 2M (G3 rule check, ~15:50): rollout success 2%, deterministic eval progress <= 0.03 (one eval shoved the box
+  away), so T6 switched to C6.5. Stopped at 3M (16:15) on this PC and resumed from the 3M checkpoint on a second,
+  identical PC (fresh clone, Python 3.11 venv + `pip install -e .`, no conda) to finish 10M as the record of plain PPO:
+  `--resume --total-steps 7000000` (SB3 adds it to the current count). `progress.csv` for 0-3M saved as
+  `progress_0-3M.csv` (SB3 overwrites it on resume).
 - [ ] **C6.5 Fallback: residual RL.** Action = scripted pusher + learned residual. Matches the brief's
   "bootstrap a policy and use RL" suggestion; use only if G3 fails, and say so in the README.
   Residual RL on a base controller is used in HuDOR and ManipTrans.
@@ -373,7 +381,16 @@ object-aware replay (that is T7).
   The pusher's stuck detection is told the executed command (`ScriptedPusher.executed`). Zero residual on train
   reproduces the frozen scripted result exactly (27/27, 0.534 cm, 0.367 cm). Sanity run (200k steps, 4 envs, 8 train
   eval episodes): 8/8 at every eval, deviation 0.55-0.65 cm (untrained 0.58; scripted 0.66 on these 8), final error
-  0.35 -> 0.24 cm, episodes 147 -> 122 steps. Full run `residual_s0`: 8 envs, 3M steps.
+  0.35 -> 0.24 cm, episodes 147 -> 122 steps. Full run `residual_s0`: 8 envs, 3M steps, launched 16:25.
+  `residual_s0` (stopped at 1M, 17:05, to free the CPU for C6.7): eval 8/8 at every point, rollout success
+  0.98-1.0; train-eval mean deviation 0.52 cm untrained, 0.56-0.71 cm from 200k to 900k (one eval at 500k read 1.00,
+  an outlier on 8 episodes); episodes 146 -> 103 steps. It learned to finish about 30% sooner, not to track better.
+- [ ] **C6.7 Deviation-weighted reward for the residual run.** `deviation_weight` on PushTrackEnv (None = C6.1
+  reward): the per-step `0.1 x lateral` term becomes `w x (lateral / 1 cm) x (box displacement / path length)`,
+  which sums to about w x mean deviation (cm), the metric's weighting, and does not pay for speed. w = 5, fixed in
+  advance: 0.5 cm of extra mean deviation costs 2.5, about twice the ~1.2 that finishing 146 -> 108 steps earns
+  through the discounted +10 bonus; the bonus equals 2 cm of mean deviation, the success threshold. Run
+  `residual_dev5`, 3M steps. In progress (session in t3, branch t6-reward).
 - [ ] **C6.6 Time-indexed reward ablation (P2).** The same PPO setup with a time-indexed tracking reward
   (reference point at time t, not at progress p); compare on the test split. Turns claim (4) from a cited design
   choice into a result.
@@ -395,6 +412,13 @@ sim cube starts at the recorded start pose, their "object-aware" variant is iden
 ## T8: Showcase (P1)
 
 - [ ] **C8.1** Run the best controller on the held-aside letter traces. Side-by-side GIF for the top of the README.
+  **Pipeline done 2026-10-08** (`scripts/showcase.py`, `tests/test_showcase.py`), run with the scripted pusher; the
+  final controller is chosen Fri from the test results (`--run runs/<name>`, not yet run on a trained policy).
+  Feasibility under the frozen map (C3.4 test): 4/4 showcase traces, 100% of points. Scripted, until-done: 4/4,
+  mean deviation 0.48 / 0.58 / 1.00 / 0.55 cm (L, U, S, C), progress 0.99-1.00. GIFs: real video and sim on one
+  clock at real speed, letters upright (C shown from the board side, rotation only), reference path dashed;
+  `eval.report.write_gif` gave 19.5 MB per episode, so the script has its own palette-limited writer (< 8 MB).
+  The sim pushes about twice as fast as the human (frozen 6.6 cm/s; ep_071 10 s against 18 s).
 
 ## T9: Data-scaling curve (P1)
 
@@ -415,6 +439,10 @@ Rotating the cube needs pusher contact-mode switching, so yaw stays P2.
   method; results table (hand replay / scripted / RL); design choices with rationale
   (object vs hand, progress indexing, RL in EE space with analytic IK); what didn't work; how to run; limitations.
 - [ ] **C11.2 Clean-clone test.** Fresh venv, follow the README literally, confirm the eval script runs.
+- [x] **C11.3 Results table and training curves** (`scripts/results_figures.py`, `tests/test_results_figures.py`):
+  `results/results_table.md` from `results/<method>_test.csv` files, `results/training_curves.png` from run
+  directories (concatenates `progress*.csv` of a resumed run). Mean deviation is displacement-weighted, so a box
+  that never moves scores near 0: report progress and success alongside it (plain PPO's curve shows this).
 
 ## T12: Submission (P0)
 
@@ -584,6 +612,13 @@ Rotating the cube needs pusher contact-mode switching, so yaw stays P2.
   2M had 2-4% rollout success and its deterministic eval never moved the box along the path. Residual
   parameters were fixed before the sanity run and not swept. Results from it measure what RL adds to the scripted
   pusher, not RL learning to push; the README says so.
+- 2026-10-08: Tracking accuracy is the objective; speed is not (the progress-indexed reward exists to drop timing).
+  The C6.1 reward did not encode that: with gamma 0.99 the discounted success bonus pays about +1.2 for finishing
+  146 -> 108 steps sooner, while 0.1 x lateral (m) charges about 0.05 for 0.5 cm more deviation, so residual_s0
+  optimised speed. Fixed for the residual run by C6.7 (weight derived above, not swept). Plain PPO keeps the
+  C6.1 reward; it never reached the regime where this matters. Missed when C6.1 and C6.5 were reviewed.
+- 2026-10-08: Showcase letter traces run once with the frozen workspace map and scripted pusher (C8.1), no tuning;
+  the final showcase controller is picked Fri from test results only.
 
 ## What didn't work
 
@@ -645,3 +680,5 @@ Rotating the cube needs pusher contact-mode switching, so yaw stays P2.
   In the missed frames checked (ep_026) the hand is out of frame, or the finger is hidden while the box sits at the
   image edge, so there is nothing to detect. A 400 px crop found no hand at all in ep_010 (0% against 84% full
   frame): the palm detector needs the whole hand in view.
+- The C6.1 reward on the residual run: it paid for finishing sooner (discounted success bonus) far more than for
+  tracking, so residual_s0 got about 30% faster with mean deviation 0.6-0.7 cm against 0.52 untrained (C6.5, C6.7).
