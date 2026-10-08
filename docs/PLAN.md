@@ -42,9 +42,9 @@ Statuses: `todo` / `in progress` / `done` / `blocked` / `cut`.
 | T0  | Repo + environment                 | P0  | 1 h    | Wed | done   |
 | T1  | Data capture                       | P0  | 2–3 h  | Wed | done   |
 | T2  | Extraction pipeline                | P0  | 3–4 h  | Wed | done   |
-| T3  | Simulation env                     | P0  | 3–4 h  | Wed/Thu | in progress |
-| T4  | Evaluation harness                 | P0  | 2 h    | Thu | todo   |
-| T5  | Scripted pusher                    | P0  | 3 h    | Thu | todo   |
+| T3  | Simulation env                     | P0  | 3–4 h  | Wed/Thu | done |
+| T4  | Evaluation harness                 | P0  | 2 h    | Thu | in progress (C4.3 open) |
+| T5  | Scripted pusher                    | P0  | 3 h    | Thu | done   |
 | T6  | RL policy                          | P1  | 6–8 h  | Thu/Fri | todo |
 | T7  | Hand-replay baseline               | P1  | 2 h    | Thu | todo   |
 | T8  | Showcase trajectory                | P1  | 1 h    | Fri | todo   |
@@ -57,6 +57,7 @@ Statuses: `todo` / `in progress` / `done` / `blocked` / `cut`.
 
 - **G1, Wed after T3.1 (1 h timebox):** SO-101 MJCF loads and IK matches → use SO-101. Otherwise Panda from MuJoCo Menagerie.
 - **G2, Thu 15:00:** scripted pusher completes held-out trajectories in sim → submittable floor reached. If not, all time goes to T5 until it does.
+  **Passed Thu 12:08:** scripted pusher 6/7 on the test split (C5.2).
 - **G3, Thu 23:00:** RL learning curve rising on the full train split → keep training overnight. If flat, switch T6 to residual RL on top of the scripted pusher (C6.5).
 - **G4, Fri 18:00:** code freeze. README, GIFs and submission only after this.
 
@@ -260,33 +261,54 @@ Statuses: `todo` / `in progress` / `done` / `blocked` / `cut`.
   Fallback: `franka_emika_panda` from MuJoCo Menagerie.
   **G1 passed: SO-101.** MJCF in `sim/assets/so101/`; `python -m sim.fk_check` compares PoE FK with MuJoCo
   (1000 random configs: max 0.0038 mm, mean 0.0018 mm). Tables in `results/`.
-- [ ] **C3.2 Scene.** Table, cube with measured size and mass, small capsule pusher at the end effector
+- [x] **C3.2 Scene.** Table, cube with measured size and mass, small capsule pusher at the end effector
   for clean single-point contact. Start friction values, then tune: cube must slide, not tip or stick.
   The object is a box, not a cube (81 x 81 x 32.5 mm): add `height_mm` to `load_props` and use it for the geom.
   **Test:** a constant push makes the cube slide without tipping.
-- [ ] **C3.3 EE controller.** Action = planar EE velocity at fixed height → target → DLS IK → position actuators.
+  **Done 2026-10-08** (`sim/scene.py`). Box 81 x 81 x 32.5 mm, 80 g from `props.yaml` (`cube_height` added to
+  `load_props`). Table friction 0.3, pusher-box 0.8; 6 mm capsule on the gripper, centred 15 mm above the table.
+  The test pushes at constant speed: the box slides > 20 mm with < 5 deg tilt. Gripper and jaw collision is off, so
+  the capsule is the only contact (decision log).
+- [x] **C3.3 EE controller.** Action = planar EE velocity at fixed height → target → DLS IK → position actuators.
   SO-101: your library, position-only IK. Panda: MuJoCo site Jacobian with the same damped pseudo-inverse.
   Verify your FK against the MuJoCo EE site on random configs; save the error table for the README.
   FK check done under G1 (`sim/fk_check.py`). Two IK findings the wrapper must handle (see decision log):
   take the target orientation from the current configuration, and re-check FK on the returned angles.
   **Test:** the IK wrapper rejects a "converged" solution that lands on a joint limit and misses by > 1 mm.
   This is the regression test for the clamp finding in the decision log.
-- [ ] **C3.4 Workspace map.** One affine map (translation + uniform scale ≤ 1) from human table frame to robot
+  **Done 2026-10-08** (`control/ee_controller.py`). Planar EE displacement, position-only DLS IK, joint position
+  targets. Target orientation from the current configuration; FK re-check rejects clamped misses (regression test).
+- [x] **C3.4 Workspace map.** One affine map (translation + uniform scale ≤ 1) from human table frame to robot
   workspace, shared by all episodes. Report how many trajectories fall outside reach.
-- [ ] **C3.5 Gymnasium env `PushTrack-v0`.** Reset samples a trajectory from a given split, places the cube at
+  **Done 2026-10-08** (`control/workspace.py`, `data/workspace_map.json`). Fitted on train only: scale 0.80, offset
+  (0.447, 0.063) m, 27/27 train trajectories feasible at every point. Feasible = box centre >= 147 mm from the base
+  axis (90 mm base footprint + 57 mm half-diagonal) and the pusher position behind the box within 12 mm of a
+  reachable FK sample at push height (200 000 random configurations, 17 280 at push height, median spacing 1.9 mm).
+- [x] **C3.5 Gymnasium env `PushTrack-v0`.** Reset samples a trajectory from a given split, places the cube at
   its start pose, pusher at standby. `render()` returns RGB for GIFs. Observation, action and reward as in T6.
   **Test:** gymnasium's `check_env` passes; a seeded reset gives the same result twice.
+  **Done 2026-10-08** (`sim/push_env.py`). 20 Hz (25 substeps of 2 ms), 600-step limit (longest train episode 20.2 s
+  + 50%). `PushTrackEnv(split=...)` maps that split's episodes with the stored workspace map and starts the box at the
+  recorded start pose and yaw; `reset(options={"episode_id": ...})` selects one. Progress is arc length, as in
+  `eval/metrics.py`; results are scored by `eval/metrics.py`, not by the env's success flag. `check_env` passes, seeded
+  resets reproduce.
 
 ## T4: Evaluation harness (P0)
 
 Built before any method so every row of the results table is measured the same way.
 
-- [ ] **C4.1 Metrics.** Mean deviation from the reference path (cm), final position error (cm),
+- [x] **C4.1 Metrics.** Mean deviation from the reference path (cm), final position error (cm),
   success (final error < 2 cm and progress ≥ 90%), completion time. Breakdown by category.
   **Test:** hand-computed cases: perfect tracking scores 0, a constant offset gives the known deviation, and
   results just either side of the success threshold.
-- [ ] **C4.2 Runner.** `evaluate(controller, split) → results.csv`, trajectory overlay plots,
+  **Done 2026-10-08** (`eval/metrics.py`). Progress = furthest projection on the reference over its length. Mean
+  deviation = distance to the reference weighted by box displacement, so time spent stationary does not lower it.
+  Final error to the reference end point. Success = final error < 2 cm and progress >= 0.9.
+- [x] **C4.2 Runner.** `evaluate(controller, split) → results.csv`, trajectory overlay plots,
   GIF writer with real video and sim render side by side.
+  **Done 2026-10-08** (`eval/report.py`). `evaluate(controller, split)` runs one rollout per episode (parallel
+  workers) and writes the results CSV, per-category summary and overlay plot. Side-by-side GIF writer exists; no
+  real-vs-sim GIF made yet (T8).
 - [ ] **C4.3 Smoke test.** One synthetic episode through extract → env → scripted pusher → metrics in under 30 s,
   not marked slow. This is also what C11.2's clean-clone test runs.
 
@@ -295,10 +317,18 @@ Built before any method so every row of the results table is measured the same w
 A closed-loop tracking controller on the object trajectory, no learning. Not equivalent to
 object-aware replay (that is T7).
 
-- [ ] **C5.1 Controller.** Lookahead point on the reference path ahead of the cube's progress, push direction d.
+- [x] **C5.1 Controller.** Lookahead point on the reference path ahead of the cube's progress, push direction d.
   Pusher goal = cube − (half side + margin)·d. Approach by arcing around the cube, not through it.
   Push along d with lateral correction.
-- [ ] **C5.2 Evaluate** on the test split. First row of the results table.
+  **Done 2026-10-08** (`control/scripted_pusher.py`). Goal on the line through the box centre (where the ray along -d
+  leaves the footprint, using the box yaw), approach around a circle clear of the half-diagonal, push with lateral
+  correction and hysteresis. The step halves while the arm is not following (near the reach limit).
+- [x] **C5.2 Evaluate** on the test split. First row of the results table.
+  **Done 2026-10-08.** Tuned on train only (`results/scripted_tuning_log.csv`): lookahead 2.5 cm, push speed
+  3.3 mm/step (6.6 cm/s, inside the recorded 3-9 cm/s). Train 27/27, mean deviation 0.53 cm. Test, run once at the
+  final parameters: 6/7, mean deviation 0.59 cm. Failure: ep_027 (turn), the box overshot the corner and the pusher
+  needed a position beyond reach; it stalled until the step limit (final error 20 cm). The env ends an episode at the
+  first success, so final error on successes is capped near 2 cm (1.5-2.0 cm here).
 
 ## T6: RL policy (P1)
 
@@ -484,6 +514,19 @@ Rotating the cube needs pusher contact-mode switching, so yaw stays P2.
   refuses without it (the "~8 mm" in the plan is a guess, and a scratch run with it gave a fingertip-to-box-centre
   distance of 47-50 mm, consistent). The hand model (`hand_landmarker.task`, 7.8 MB, sha256 checked) is downloaded to
   gitignored `data/models/` by `python -m extract.fingertip --fetch-model`.
+- 2026-10-08: G2 passed at 12:08, ahead of the 15:00 gate: scripted pusher 6/7 on the test split.
+- 2026-10-08: Workspace reachability. The first check used the convex hull of FK samples, which fills the dead zone
+  around the base: it reported 27/27 at scale 1.0 with paths running over the base. Replaced by nearest-sample
+  reachability plus base clearance and pusher reach behind the box. At 20 000 random configurations only ~1 700 land
+  at push height and the sample has holes, so the fit uses 200 000. The 12 mm tolerance (~6x the sample spacing) is
+  the remaining slack at the reach boundary.
+- 2026-10-08: Gripper and jaw collision disabled in the sim; the 6 mm capsule is the only contact. With the meshes on,
+  the gripper hit the box about 4 cm before the capsule did. A modelling simplification, stated in the README; the
+  alternative is a longer capsule below the gripper.
+- 2026-10-08: The observation's EE position is FK of the measured joint angles, not the last IK target, which led the
+  arm by up to 3 cm while moving.
+- 2026-10-08: Env speed fell from 127 steps/s (C3.5 commit) to about 3-5 steps/s per env after the T5 changes, almost
+  all in DLS IK (~110 iterations per solve). Must be fixed before C6.3.
 
 ## What didn't work
 
@@ -530,3 +573,9 @@ Rotating the cube needs pusher contact-mode switching, so yaw stays P2.
   detection confidence from 0.5 to 0.1 raised ep_000 from 0 to 34% and left ep_025 at 19%. T7 cannot rely on
   MediaPipe alone; options: infer the fingertip from the box's motion and contact point (the pusher's position follows
   from the contact), or colour/skin segmentation of the fingertip, or cut T7's fidelity. Decide when T7 starts.
+- Convex hull of FK samples as the reachable set (see decision log): counted the base itself as reachable.
+- Env first stepped at 100 Hz with a 500-step (5 s) cap, against 10-20 s recordings, and counted progress in
+  time-sampled reference points rather than arc length. Both fixed in C3.5.
+- Push speed 1 cm/step (0.2 m/s): 23/27 on train, the box slid away from the pusher. 3.3 mm/step gave 27/27.
+- Gripper meshes touching the box before the pusher capsule, and the commanded EE position in the observation
+  (see decision log).
