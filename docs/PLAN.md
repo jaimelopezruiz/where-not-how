@@ -45,8 +45,8 @@ Statuses: `todo` / `in progress` / `done` / `blocked` / `cut`.
 | T3  | Simulation env                     | P0  | 3–4 h  | Wed/Thu | done |
 | T4  | Evaluation harness                 | P0  | 2 h    | Thu | in progress (C4.3 open) |
 | T5  | Scripted pusher                    | P0  | 3 h    | Thu | done   |
-| T6  | RL policy                          | P1  | 6–8 h  | Thu/Fri | todo |
-| T7  | Hand-replay baseline               | P1  | 2 h    | Thu | todo   |
+| T6  | RL policy                          | P1  | 6–8 h  | Thu/Fri | in progress (C6.4 training) |
+| T7  | Hand-replay baseline               | P1  | 2 h    | Thu | in progress |
 | T8  | Showcase trajectory                | P1  | 1 h    | Fri | todo   |
 | T9  | Data-scaling curve                 | P1  | compute| Thu night | cut  |
 | T10 | Yaw tracking                       | P2  | 2–3 h  | Fri | cut    |
@@ -330,17 +330,31 @@ object-aware replay (that is T7).
   needed a position beyond reach; it stalled until the step limit (final error 20 cm). Evaluation runs each episode
   until the pusher reports done (box within 5 mm of the end) or the step limit, not to the env's first success:
   final error 0.38 cm on train, 0.34-0.38 cm by category on the six test successes (3.24 cm overall with ep_027).
+  Re-run once more after the C6.3 scene change (arm links no longer touch the box), same parameters: train 27/27,
+  mean deviation 0.53 cm, final error 0.37 cm; test 7/7, 0.61 cm, 0.39 cm. ep_027 now succeeds, which suggests its
+  failure was the forearm hitting the box rather than the reach limit. These are the frozen scripted numbers.
 
 ## T6: RL policy (P1)
 
-- [ ] **C6.1 Phase tracker + reward, with unit tests on synthetic paths.**
+- [x] **C6.1 Phase tracker + reward, with unit tests on synthetic paths.**
   Progress-indexed, not time-indexed: phase p advances while the cube is within r_adv (~1.5 cm) of ref[p].
   Reward = progress gain − α·lateral deviation − β·‖pusher − cube‖ (reach shaping) + success bonus.
-- [ ] **C6.2 Observation/action.** Obs: EE xy, cube (x, y, sin θ, cos θ), next k reference points in the cube frame.
+  **Done 2026-10-08** (`sim/push_env.py`). Phase tracker searches 10 cm ahead and advances while the box is within
+  r_adv = 3 cm of the path (not 1.5 cm). Reach shaping targets the pre-contact point 5.15 cm behind the box along
+  the push direction, weight 0.1 (distance to the box centre pulled the pusher into the box and off the path).
+- [x] **C6.2 Observation/action.** Obs: EE xy, cube (x, y, sin θ, cos θ), next k reference points in the cube frame.
   Action: clipped EE Δx, Δy.
-- [ ] **C6.3 Overfit one trajectory.** PPO (SB3), 8 subprocess envs, `VecNormalize`. Must succeed within
+  **Done 2026-10-08.** As planned, k = 5 reference points spaced 2.5 cm in arc length from the phase (they were
+  spaced by time samples, spanning ~0.5 cm, and identical in 40-70% of steps).
+- [x] **C6.3 Overfit one trajectory.** PPO (SB3), 8 subprocess envs, `VecNormalize`. Must succeed within
   ~10–20 min. If it can't learn one path, fix the env or reward before scaling.
+  **Done 2026-10-08** (`rl/train_ppo.py`, `runs/overfit_ep010_a3`). ep_010 (12 cm straight), seed 0: the deterministic
+  policy succeeds from 200k steps (~10 min); final model progress 1.00, final error 0.38 cm, mean deviation 1.67 cm
+  (scripted ~0.5 cm). Training success 0.27 at 86k, 0.90 at 410k. Two attempts failed first (decision log).
 - [ ] **C6.4 Full train** on the train split, fixed seeds, TensorBoard logs, checkpoints. Evaluate at G3.
+  Launched Thu 14:43 (`python -m rl.train_full --seed 0 --name full_s0`, in the t4 worktree): 8 envs, 10M steps,
+  ~500 steps/s, eval every 100k on 8 train episodes (2 per category), checkpoints every 500k. At 1M steps: training
+  success ~1%, return flat near -9.5 since 250k, deterministic eval does not move the box yet.
 - [ ] **C6.5 Fallback: residual RL.** Action = scripted pusher + learned residual. Matches the brief's
   "bootstrap a policy and use RL" suggestion; use only if G3 fails, and say so in the README.
   Residual RL on a base controller is used in HuDOR and ManipTrans.
@@ -533,6 +547,13 @@ Rotating the cube needs pusher contact-mode switching, so yaw stays P2.
 - 2026-10-08: Evaluation protocol: `evaluate(..., until_done=True)` runs past the env's first success until the
   controller reports done or the step limit, so final error is where the box ends. The first C5.2 run stopped at the
   first success (final error capped near 2 cm); re-run once with the same parameters, success and deviation unchanged.
+- 2026-10-08: Arm links no longer collide with the box (they still collide with the table and each other). In the
+  first C6.3 attempt the policy reached 38% training success with its EE 17 cm from the box: it swept the box with
+  the forearm. With the gripper change, only the 6 mm capsule touches the box; stated as a simplification in the README.
+- 2026-10-08: Test-split runs of the scripted pusher, all with the same parameters: (1) 11:39, stop at first success,
+  6/7; (2) until-done protocol, 6/7; (3) after the arm-collision change, 7/7. No parameter was changed after any of them.
+- 2026-10-08: TensorBoard (`tensorboard==2.21.0`) added to the env and `pyproject.toml`; `runs/` is gitignored. OneDrive
+  sync paused during training: the repo lives in OneDrive and its sync took most of the CPU.
 
 ## What didn't work
 
@@ -585,3 +606,7 @@ Rotating the cube needs pusher contact-mode switching, so yaw stays P2.
 - Push speed 1 cm/step (0.2 m/s): 23/27 on train, the box slid away from the pusher. 3.3 mm/step gave 27/27.
 - Gripper meshes touching the box before the pusher capsule, and the commanded EE position in the observation
   (see decision log).
+- C6.3 attempt 1: the policy pushed the box with its forearm (see decision log).
+- C6.3 attempt 2: reach shaping to the box centre; 0% success after 200k steps, the pusher drove into the box and
+  shoved it off the path.
+- Reference points in the observation spaced by time samples: ~0.5 cm span, often identical, so no lookahead.
