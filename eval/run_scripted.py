@@ -32,6 +32,9 @@ def main(argv=None):
     ap.add_argument("--workers", type=int, default=12)
     ap.add_argument("--out", help="prefix for the CSV, overlay and summary files")
     ap.add_argument("--note", default="")
+    ap.add_argument("--first-success", action="store_true",
+                    help="stop each episode at the env's first success (training behaviour) instead of when "
+                         "the pusher reports done")
     sig = inspect.signature(ScriptedPusher.__init__).parameters
     for name in PARAMS:
         ap.add_argument(f"--{name.replace('_', '-')}", type=float, default=sig[name].default)
@@ -40,7 +43,8 @@ def main(argv=None):
     controller = ScriptedPusher(**params)
 
     t0 = time.time()
-    results = evaluate(controller, args.split, method=args.method, workers=args.workers)
+    results = evaluate(controller, args.split, method=args.method, workers=args.workers,
+                       until_done=not args.first_success)
     elapsed = time.time() - t0
 
     table = category_table(results)

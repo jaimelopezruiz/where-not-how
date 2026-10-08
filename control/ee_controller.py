@@ -31,7 +31,8 @@ class EEController:
     :param ev:        Linear position error tolerance in metres (default 1 mm).
     """
 
-    def __init__(self, urdf_path=DEFAULT_URDF, ev: float = 1e-3):
+    def __init__(self, urdf_path=DEFAULT_URDF, ev: float = 1e-3, chunk_iters: int = 2,
+                 max_chunks: int = 6, min_contraction: float = 0.7):
         M, Slist, limits = findMnS(urdf_path)
         n = Slist.shape[1]
         Blist = np.array([Adjoint(TransInv(M)) @ Slist[:, i] for i in range(n)]).T
@@ -39,6 +40,7 @@ class EEController:
         self._Blist = Blist
         self._limits = limits
         self._ev = float(ev)
+        self._chunk_iters, self._max_chunks, self._min_contraction = chunk_iters, max_chunks, min_contraction
         self._q = np.zeros(n)
         self._z_push: float | None = None  # locked on the first solve call
 
@@ -61,6 +63,9 @@ class EEController:
     def ee_pose(self, q=None):
         """FK: 4×4 EE pose in robot base frame at the given (or current) angles."""
         return FKinBody(self._M, self._Blist, self._q if q is None else q)
+
+    def _pos_err(self, q, T_tgt):
+        return float(np.linalg.norm(FKinBody(self._M, self._Blist, q)[:3, 3] - T_tgt[:3, 3]))
 
     def solve(self, xy_target, z_fixed=None):
         """Compute joint angles to reach (x, y) at fixed height.
@@ -90,10 +95,24 @@ class EEController:
         T_tgt[1, 3] = float(xy_target[1])
         T_tgt[2, 3] = z
 
-        q_sol, converged = IKinBodyDLS(
-            self._Blist, self._M, T_tgt, self._q, self._limits,
-            ev=self._ev, position_only=True,
-        )
+        # Warm start from the current angles and run the library in short chunks. A reachable target is a
+        # Newton problem that contracts the error by an order of magnitude per iteration (1-6 iterations in
+        # practice); an unreachable one (joint limit, out of reach) stalls. Stop as soon as a chunk fails to
+        # shrink the error, instead of burning the library's 200 iterations on every step. The iterates are
+        # exactly those of one long call: the only state carried between chunks is the joint vector.
+        q_sol, converged = self._q, False
+        err = self._pos_err(q_sol, T_tgt)
+        for _ in range(self._max_chunks):
+            q_sol, converged = IKinBodyDLS(
+                self._Blist, self._M, T_tgt, q_sol, self._limits,
+                ev=self._ev, position_only=True, maxiters=self._chunk_iters,
+            )
+            if converged:
+                break
+            new_err = self._pos_err(q_sol, T_tgt)
+            if new_err > self._min_contraction * err:
+                break
+            err = new_err
 
         if not converged:
             return self._q.copy(), False

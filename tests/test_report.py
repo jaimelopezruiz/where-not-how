@@ -175,8 +175,9 @@ def test_write_gif_greyscale_frames():
 
 class _StubEnv:
     """PushTrack-like env on explicit paths: the cube follows the last action exactly (no physics)."""
-    def __init__(self, paths, ids=None):
+    def __init__(self, paths, ids=None, terminate_at=None):
         self._paths, self.episode_ids, self.dt, self.cube = paths, ids, 0.05, None
+        self.terminate_at = terminate_at
 
     def reset(self, options=None):
         self._i = options["episode_id"] and self.episode_ids.index(options["episode_id"])             if "episode_id" in options else options["episode"]
@@ -193,8 +194,9 @@ class _StubEnv:
 
     def step(self, action):
         self.k = min(self.k + 1, len(self.path) - 1)
-        done = self.k == len(self.path) - 1
-        return np.r_[self.path[self.k], self.path[self.k], 0.0, 1.0], 0.0, done, False, {}
+        last = len(self.path) - 1
+        done = self.k == last if self.terminate_at is None else self.k >= self.terminate_at
+        return np.r_[self.path[self.k], self.path[self.k], 0.0, 1.0], 0.0, done, self.k == last, {}
 
 
 class _FollowRef:
@@ -241,3 +243,38 @@ def test_evaluate_real_env_on_synthetic_path():
 def test_evaluate_needs_split_or_env():
     with pytest.raises(ValueError):
         evaluate(lambda obs: np.zeros(2))
+
+
+class _DoneAfter:
+    """Controller that reports done once it has been asked for n actions."""
+    def __init__(self, n):
+        self.n, self.calls = n, 0
+
+    def __call__(self, obs):
+        self.calls += 1
+        return np.zeros(2)
+
+    @property
+    def done(self):
+        return self.calls >= self.n
+
+
+def test_until_done_runs_past_the_envs_first_success():
+    path = np.column_stack([np.linspace(0, 0.3, 40), np.zeros(40)])
+    env = _StubEnv([path], ids=["ep_000"], terminate_at=5)          # env reports success at step 5
+    run_on = evaluate(_DoneAfter(20), env=env)[0]
+    assert run_on["steps"] == 19 and len(run_on["achieved_xy"]) == 20     # stops when the controller says done
+    first = evaluate(_DoneAfter(20), env=env, until_done=False)[0]
+    assert first["steps"] == 5                                            # training behaviour: stop at success
+
+
+def test_controller_without_done_still_stops_at_env_termination():
+    path = np.column_stack([np.linspace(0, 0.3, 40), np.zeros(40)])
+    env = _StubEnv([path], ids=["ep_000"], terminate_at=5)
+    assert evaluate(lambda obs: np.zeros(2), env=env)[0]["steps"] == 5
+
+
+def test_until_done_stops_at_the_step_limit():
+    path = np.column_stack([np.linspace(0, 0.3, 40), np.zeros(40)])
+    env = _StubEnv([path], ids=["ep_000"], terminate_at=5)
+    assert evaluate(_DoneAfter(10_000), env=env)[0]["steps"] == 39         # env truncates at the end of the path

@@ -166,3 +166,60 @@ def test_controller_throughput():
 
     print(f"\nEEController throughput: {rate:.0f} solves/sec ({elapsed:.2f} s for {n_reps * len(q_starts)} solves)")
     assert rate > 0, "throughput must be positive (sanity)"
+
+
+# -- warm-started chunked solve (env throughput) ---------------------------------------------------
+
+def _reachable_start(rng, ctrl, z=0.01625):
+    lim = ctrl._limits
+    while True:
+        q = rng.uniform(lim[:, 0], lim[:, 1])
+        p = ctrl.ee_pose(q)[:3, 3]
+        if abs(p[2] - z) < 0.03 and np.hypot(*p[:2]) > 0.12:
+            return q
+
+
+def test_chunked_solve_matches_one_long_call_for_env_sized_steps():
+    """Stopping early on a stalled chunk must not change what a 2 cm step solves to.
+
+    The reference is the library's single call (200 iterations). Chunks carry only the joint vector, so a
+    solve that converges returns the very same angles; a sweep over 2 cm steps loses no successes.
+    """
+    rng = np.random.default_rng(0)
+    long = EEController(chunk_iters=200, max_chunks=1, min_contraction=1e9)
+    fast = EEController()
+    lost = same = n = 0
+    for _ in range(120):
+        q = _reachable_start(rng, fast)
+        ang = rng.uniform(0, 2 * np.pi)
+        tgt = fast.ee_pose(q)[:2, 3] + 0.02 * np.array([np.cos(ang), np.sin(ang)])
+        for c in (long, fast):
+            c.reset(q0=q, z_push=0.01625)
+        ql, okl = long.solve(tgt)
+        qf, okf = fast.solve(tgt)
+        n += 1
+        lost += okl and not okf
+        same += okl == okf and np.allclose(ql, qf, atol=1e-9)
+    assert lost == 0
+    assert same == n
+
+
+def test_unreachable_target_fails_after_a_few_iterations():
+    """A target far outside the workspace must give up in a handful of iterations, not the library's 200."""
+    import control.kinematics.ik as ik
+    calls = [0]
+    real = ik.dls_operator
+
+    def counted(*a, **k):
+        calls[0] += 1
+        return real(*a, **k)
+
+    ik.dls_operator = counted
+    try:
+        c = EEController()
+        c.reset(q0=np.zeros(5), z_push=0.01625)
+        q, ok = c.solve([0.9, 0.0])
+    finally:
+        ik.dls_operator = real
+    assert not ok and q == pytest.approx(np.zeros(5))
+    assert calls[0] <= 12

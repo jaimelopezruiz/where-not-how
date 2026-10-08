@@ -122,6 +122,11 @@ class ScriptedPusher:
     def __call__(self, obs):
         return self.act(obs)
 
+    @property
+    def done(self):
+        """True once the last act() found the cube at the end of the path (and returned a zero action)."""
+        return self.mode == DONE
+
     def act(self, obs):
         obs = np.asarray(obs, float)
         ee, cube = obs[0:2], obs[2:4]
