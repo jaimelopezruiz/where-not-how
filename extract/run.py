@@ -170,6 +170,11 @@ def main(argv=None):
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--finger", action="store_true",
                     help="also track the fingertip (C2.3): needs the hand model and finger.tip_radius_mm in props.yaml")
+    ap.add_argument("--finger-conf", type=float, default=0.1,
+                    help="MediaPipe detection/presence/tracking confidence (0.1 gave the most coverage on train)")
+    ap.add_argument("--finger-crop", type=int, default=720,
+                    help="side in px of the square crop around the box that MediaPipe sees; 0 = whole frame")
+    ap.add_argument("--finger-cache", help="store/reuse per-episode fingertip pixels here (development only)")
     args = ap.parse_args(argv)
     manifest = read_manifest()
     if args.episodes:
@@ -179,7 +184,8 @@ def main(argv=None):
     finger = None
     if args.finger:
         from extract.fingertip import FingerTracker
-        finger = FingerTracker(*load_intrinsics()[:2])
+        finger = FingerTracker(*load_intrinsics()[:2], min_conf=args.finger_conf, crop=args.finger_crop,
+                               cache_dir=args.finger_cache)
     rows, _ = run(manifest, args.cache_dir, workers=args.workers, finger=finger)
     if finger is not None:
         print("hand found in", {e: round(f, 2) for e, f in finger.found.items()})

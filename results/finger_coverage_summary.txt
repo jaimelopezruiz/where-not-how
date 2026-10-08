@@ -1,0 +1,41 @@
+Fingertip coverage inside the contact window (T7 gate), per-episode table in finger_coverage.csv
+(python -m extract.finger_coverage; image-space detections of the index fingertip, MediaPipe hand landmarker)
+
+Rule: the contact window runs from the first to the last contact sample of the episode. A gap is a stretch of frames
+without a detection, measured between the detections around it (or to the window edge when the detections start after
+the window start or end before its end). Gaps of at most 0.5 s are bridged linearly between fingertip detections;
+nothing is filled from the box. An episode is usable when no gap longer than 0.5 s remains in the window.
+Stop rule: fewer than 4 of 7 usable test episodes ends T7 at this table.
+
+Detector settings were chosen on 9 evenly spaced TRAIN episodes (ep_000 004 010 015 026 034 058 062 066) by mean
+in-window coverage of the raw detections; the test split was not used to choose.
+  full frame, confidence 0.5, video mode      0.447   (usable 1/9)
+  full frame, confidence 0.3, video mode      0.473   (usable 1/9)
+  crop 560 px around the box, conf 0.3, video 0.600   (usable 2/9)
+  crop 640 px,  conf 0.3, video mode          0.653   (usable 2/9)
+  crop 720 px,  conf 0.3, video mode          0.650   (usable 1/9)
+  crop 720 px,  conf 0.3, image mode          0.603   (usable 1/9)
+  crop 720 px,  conf 0.1, video mode          0.717   (usable 3/9)   <- used
+A 400 px crop around the box (the first idea) found no hand at all in ep_010 (0% against 84% for the full frame): the
+crop cuts the hand off and the palm detector needs the hand, so the crop has to be large. Crops are scaled to 800 px.
+Plausibility of what was detected (train subset, in-window detections): distance from the fingertip pixel to the box
+centre, converted with the marker's pixel size: median 44-60 mm per episode (box half side 40.5 mm + tip radius), 93%
+of detections within 30-80 mm at conf 0.1 (94% at conf 0.3), 2% beyond 120 mm; the implausible ones sit in ep_034 and
+ep_058.
+
+Result (crop 720, conf 0.1, video mode)           usable   mean in-window coverage: raw -> after bridging
+  train (27)                                      5 / 27     0.714 -> 0.747
+  test (7)                                        3 / 7      0.779 -> 0.845      stop rule: 3 < 4, T7 stops here
+  showcase (4, held aside)                        0 / 4      0.547 -> 0.574
+  usable train: ep_010 ep_040 ep_061 ep_062 ep_066    usable test: ep_009 ep_036 ep_057
+
+Sensitivity of the verdict (reported, not used): the test count is 3 because ep_005 has no fingertip detection for the
+first 0.58 s of its contact window (the hand enters the frame late; no gap inside the push, longest 0.32 s). If gaps
+at the two ends of the window were tolerated, as a replay that starts at the first sample and holds the last one
+could, test usable would be 4 / 7 and train 12 / 27. Test episodes that fail on a gap inside the push: ep_016 (2.5 s),
+ep_027 (2.4 s), ep_031 (1.35 s).
+
+Why the gaps are long: looking at frames the detector missed in ep_026 (34% coverage; ep_025 has 20%; their longest
+gaps are 4 s in a 12-15 s window), the hand is out of the frame or the finger is not visible while the box sits at the
+image edge, so those frames contain no fingertip to detect. Lower confidence and cropping raised coverage from 47% to
+72% on the train subset; I did not check the other episodes' missed frames one by one.
