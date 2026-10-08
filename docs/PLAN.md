@@ -18,7 +18,7 @@ The principle itself (object motion as the embodiment-agnostic signal) is establ
 1. One goal-conditioned policy over many recorded trajectories, scored on held-out recordings
    (Human2Sim2Robot trains one policy per task; Im2Flow2Act conditions on object flow from a generative model,
    not on recorded trajectories).
-2. Non-prehensile pushing, where copying the hand is expected to fail hardest (T7 tests this): the pusher-slider system is hybrid and
+2. Non-prehensile pushing, where copying the hand is expected to fail hardest (T7 was to test this; it stopped at its coverage gate, see C7.1): the pusher-slider system is hybrid and
    underactuated (Hogan & Rodriguez, IJRR 2020).
 3. A low-cost 5-DOF arm with closed-form PoE kinematics (DLS IK) validated against MuJoCo.
 4. A progress-indexed (path-following) reward rather than time-indexed tracking (Aguiar, Kokotovic &
@@ -43,10 +43,10 @@ Statuses: `todo` / `in progress` / `done` / `blocked` / `cut`.
 | T1  | Data capture                       | P0  | 2–3 h  | Wed | done   |
 | T2  | Extraction pipeline                | P0  | 3–4 h  | Wed | done   |
 | T3  | Simulation env                     | P0  | 3–4 h  | Wed/Thu | done |
-| T4  | Evaluation harness                 | P0  | 2 h    | Thu | in progress (C4.3 open) |
+| T4  | Evaluation harness                 | P0  | 2 h    | Thu | done   |
 | T5  | Scripted pusher                    | P0  | 3 h    | Thu | done   |
 | T6  | RL policy                          | P1  | 6–8 h  | Thu/Fri | in progress (C6.4 training) |
-| T7  | Hand-replay baseline               | P1  | 2 h    | Thu | in progress |
+| T7  | Hand-replay baseline               | P1  | 2 h    | Thu | cut (C7.1 coverage gate) |
 | T8  | Showcase trajectory                | P1  | 1 h    | Fri | todo   |
 | T9  | Data-scaling curve                 | P1  | compute| Thu night | cut  |
 | T10 | Yaw tracking                       | P2  | 2–3 h  | Fri | cut    |
@@ -216,6 +216,7 @@ Statuses: `todo` / `in progress` / `done` / `blocked` / `cut`.
   `python -m extract.run --finger`. Checked once on 5 episodes with a scratch 8 mm: during contact the fingertip sits
   a median 47-50 mm from the box centre (half side 40.5 + radius 8 = 48.5), so the geometry is right. Coverage is
   the problem, see "What didn't work".
+  **Cut with T7 (2026-10-08):** the fingertip radius was never measured and `finger_xy` stays NaN.
 - [x] **C2.4 Cleaning.** Drop low-confidence frames, interpolate gaps ≤ 5 frames, Savitzky–Golay filter,
   resample to the sim control rate. Contact window from cube speed threshold.
   **Test:** gaps of ≤ 5 frames are interpolated, longer gaps are left as gaps; yaw is unwrapped before filtering.
@@ -309,8 +310,13 @@ Built before any method so every row of the results table is measured the same w
   **Done 2026-10-08** (`eval/report.py`). `evaluate(controller, split)` runs one rollout per episode (parallel
   workers) and writes the results CSV, per-category summary and overlay plot. Side-by-side GIF writer exists; no
   real-vs-sim GIF made yet (T8).
-- [ ] **C4.3 Smoke test.** One synthetic episode through extract → env → scripted pusher → metrics in under 30 s,
+- [x] **C4.3 Smoke test.** One synthetic episode through extract → env → scripted pusher → metrics in under 30 s,
   not marked slow. This is also what C11.2's clean-clone test runs.
+  **Done 2026-10-08** (`eval/smoke.py`, `tests/test_smoke.py`). A rendered 14 cm curved push goes through detection
+  and extraction, `PushTrackEnv(episode_files=...)` (new: explicit `.npz` files loaded like split episodes),
+  `ScriptedPusher` and `evaluate()` (until-done); no `data/raw/` needed. Extracted path within 2.4 mm of the rendered
+  truth (test asserts 6 mm); scripted pusher succeeds, final error 0.44 cm, progress 0.99. About 7 s.
+  `python -m eval.smoke` prints the metrics and `SMOKE OK`.
 
 ## T5: Scripted pusher (P0, critical path to G2)
 
@@ -355,6 +361,8 @@ object-aware replay (that is T7).
   Launched Thu 14:43 (`python -m rl.train_full --seed 0 --name full_s0`, in the t4 worktree): 8 envs, 10M steps,
   ~500 steps/s, eval every 100k on 8 train episodes (2 per category), checkpoints every 500k. At 1M steps: training
   success ~1%, return flat near -9.5 since 250k, deterministic eval does not move the box yet.
+  At 1.1M (15:20): rollout success 2-4% (a 5-7% spell at 790-890k fell back to 0 by 950k), return about -8;
+  deterministic eval 0/8 at every checkpoint, and at 0, 200k, 300k, 600k and 900k the pusher never touches the box.
 - [ ] **C6.5 Fallback: residual RL.** Action = scripted pusher + learned residual. Matches the brief's
   "bootstrap a policy and use RL" suggestion; use only if G3 fails, and say so in the README.
   Residual RL on a base controller is used in HuDOR and ManipTrans.
@@ -369,6 +377,12 @@ sim cube starts at the recorded start pose, their "object-aware" variant is iden
 
 - [ ] **C7.1** Fingertip path through the same workspace map, followed open-loop at the recorded timing.
   Evaluate with T4. Expected to fail; the failure modes are evidence for the thesis, so capture GIFs of them.
+  **Stopped at the coverage gate 2026-10-08** (`extract/finger_coverage.py`, `results/finger_coverage.csv`,
+  `results/finger_coverage_summary.txt`). Stop rule set before the run: fewer than 4 of 7 usable test episodes.
+  Usable = no fingertip gap over 0.5 s left in the contact window after bridging gaps up to 0.5 s (gaps at the window
+  edges tolerated up to 0.5 s); nothing is inferred from the box. Detector settings chosen on 9 train episodes only:
+  720 px crop around the box, confidence 0.1, video mode (mean in-window coverage 0.45 -> 0.72). Usable: train 5/27,
+  test 3/7 (ep_009, ep_036, ep_057), showcase 0/4. No hand replay was run, so the results table has no hand-replay row.
 
 ## T8: Showcase (P1)
 
@@ -554,6 +568,10 @@ Rotating the cube needs pusher contact-mode switching, so yaw stays P2.
   6/7; (2) until-done protocol, 6/7; (3) after the arm-collision change, 7/7. No parameter was changed after any of them.
 - 2026-10-08: TensorBoard (`tensorboard==2.21.0`) added to the env and `pyproject.toml`; `runs/` is gitignored. OneDrive
   sync paused during training: the repo lives in OneDrive and its sync took most of the CPU.
+- 2026-10-08: T7 stopped at its coverage gate (3/7 usable test episodes against the rule's 4). ep_005 fails only on a
+  0.58 s gap at the start of its contact window (edge tolerance 0.5 s); tolerating edge gaps of any length would give
+  4/7 (train 12/27), but that reading came up after the test count was known, so it was not adopted. C2.3 is cut with
+  T7. Claim (2) (copying the hand fails hardest at pushing) is therefore not tested here; the README says so.
 
 ## What didn't work
 
@@ -610,3 +628,8 @@ Rotating the cube needs pusher contact-mode switching, so yaw stays P2.
 - C6.3 attempt 2: reach shaping to the box centre; 0% success after 200k steps, the pusher drove into the box and
   shoved it off the path.
 - Reference points in the observation spaced by time samples: ~0.5 cm span, often identical, so no lookahead.
+- MediaPipe fingertip coverage, second attempt (T7): a 720 px crop around the box at confidence 0.1 raised mean
+  in-window coverage from 0.45 to 0.72 on train, still only 5/27 train and 3/7 test episodes without a gap over 0.5 s.
+  In the missed frames checked (ep_026) the hand is out of frame, or the finger is hidden while the box sits at the
+  image edge, so there is nothing to detect. A 400 px crop found no hand at all in ep_010 (0% against 84% full
+  frame): the palm detector needs the whole hand in view.
