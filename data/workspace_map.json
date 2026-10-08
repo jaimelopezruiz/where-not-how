@@ -1,0 +1,15 @@
+{
+  "scale": 0.7999999999999998,
+  "offset_xy": [
+    0.4466303466249872,
+    0.06302659999923255
+  ],
+  "fitted_on": "train",
+  "n_feasible": 27,
+  "n_train": 27,
+  "r_min_cube": 0.14677564927611036,
+  "pusher_offset": 0.07327564927611036,
+  "reach_tolerance": 0.012,
+  "n_fk_samples": 17280,
+  "median_nn_spacing_m": 0.0018881837414818161
+}

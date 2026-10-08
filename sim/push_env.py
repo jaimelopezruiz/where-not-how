@@ -1,0 +1,381 @@
+"""PushTrack-v0: push a cube along a reference trajectory (C3.5).
+
+Observation (float32, shape (6 + 2*k_ref,)):
+    ee_x, ee_y                          -- EE position in robot base frame (m)
+    cube_x, cube_y, sin_yaw, cos_yaw    -- cube pose in world frame
+    ref_0_x, ref_0_y, ..., ref_{k-1}   -- next k lookahead points, in cube frame (m)
+
+Action (float32, shape (2,)):
+    dx, dy  -- EE displacement per env step, clipped to ±max_delta (m)
+
+Reward:
+    progress_delta - 0.1 * lateral_dev - 0.01 * reach_dist + 10 * success
+
+    progress_delta is arc-length fraction gained this step (monotonically
+    non-decreasing within an episode).  This matches the definition used by
+    T4's eval/metrics.py; episode success is also re-evaluated there.
+
+Episode ends (terminated) on success: final_error < 2 cm and arc_progress >= 90 %.
+Episode is truncated at max_episode_steps.
+
+Control rate: timestep 0.002 s × n_steps_per_action 25 = 0.05 s/step = 20 Hz,
+matching extract/clean.py CONTROL_HZ.  max_episode_steps default 600 = 30 s ×
+20 Hz (max observed train duration 20.2 s + 50 % slack).
+
+Reference paths come from one of three sources, in this order:
+  paths=...      pre-mapped (N, 2) arrays in robot base-frame coords (tests, ad hoc);
+  split=...      "train" | "test" | "showcase": that split's data/processed/*.npz,
+                 cube_xy mapped through the stored WorkspaceMap
+                 (control.workspace.load_workspace_map; fitted on train only),
+                 resampled to the control rate from `t`, cube placed at the
+                 recorded start pose including yaw;
+  neither        synthetic paths from control.workspace.generate_synthetic_paths(),
+                 translated to the centre of the robot's reachable workspace.
+"""
+import json
+import time
+
+import gymnasium as gym
+import mujoco
+import numpy as np
+from gymnasium import spaces
+
+from capture.common import DEFAULT_PROPS, REPO_ROOT, load_props
+from control.ee_controller import EEController
+from control.workspace import WORKSPACE_MAP_PATH, generate_synthetic_paths, load_workspace_map
+from sim.scene import ARM_JOINTS, build_push_scene_xml
+
+SPLITS_PATH = REPO_ROOT / "data" / "splits.json"
+PROCESSED_DIR = REPO_ROOT / "data" / "processed"
+
+
+def resample_episode(t, cube_xy_yaw, dt):
+    """Resample (t, x, y, yaw) onto a uniform grid of step dt starting at t[0].
+
+    Returns an (M, 3) array.  Yaw is unwrapped before interpolation and
+    re-wrapped to (-pi, pi]; samples already on the grid are returned unchanged.
+    """
+    t = np.asarray(t, dtype=float)
+    pose = np.asarray(cube_xy_yaw, dtype=float).copy()
+    pose[:, 2] = np.unwrap(pose[:, 2])
+    grid = t[0] + dt * np.arange(int(np.floor((t[-1] - t[0]) / dt + 1e-9)) + 1)
+    out = np.column_stack([np.interp(grid, t, pose[:, i]) for i in range(3)])
+    out[:, 2] = np.arctan2(np.sin(out[:, 2]), np.cos(out[:, 2]))
+    return out
+
+
+class PushTrackEnv(gym.Env):
+    """PushTrack-v0 gymnasium environment."""
+
+    metadata = {"render_modes": ["rgb_array"], "render_fps": 20}
+
+    def __init__(
+        self,
+        render_mode=None,
+        k_ref: int = 5,
+        max_delta: float = 0.02,
+        n_steps_per_action: int = 25,   # 0.002 s × 25 = 0.05 s/step = 20 Hz
+        max_episode_steps: int = 600,   # max train 20.2 s × 20 Hz + 50% slack
+        props_path=DEFAULT_PROPS,
+        paths=None,
+        split=None,
+        workspace_map_path=WORKSPACE_MAP_PATH,
+    ):
+        """
+        :param k_ref:               Lookahead reference points per observation.
+        :param max_delta:           Max EE displacement per action (m).
+        :param n_steps_per_action:  MuJoCo steps per env step.
+        :param max_episode_steps:   Truncation horizon.
+        :param paths:               Iterable of (N_i, 2) reference paths in robot
+                                    base-frame coords (m).  None → synthetic paths.
+        :param split:               "train", "test" or "showcase": use that split's
+                                    recorded episodes (mutually exclusive with paths).
+        :param workspace_map_path:  Stored WorkspaceMap used for split episodes.
+        """
+        if split is not None and paths is not None:
+            raise ValueError("pass either `paths` or `split`, not both")
+        super().__init__()
+
+        self.render_mode = render_mode
+        self.k_ref = k_ref
+        self.max_delta = float(max_delta)
+        self.n_steps_per_action = int(n_steps_per_action)
+        self.max_episode_steps = int(max_episode_steps)
+
+        # Scene
+        props = load_props(props_path, require=("cube_side", "cube_height", "cube_mass"))
+        self._cube_height = props["cube_height"]
+        self._model = mujoco.MjModel.from_xml_string(build_push_scene_xml(props))
+        self._data  = mujoco.MjData(self._model)
+
+        # Body / joint / site IDs (looked up once)
+        self._cube_id = mujoco.mj_name2id(
+            self._model, mujoco.mjtObj.mjOBJ_BODY, "cube"
+        )
+        _jnt = self._model.body_jntadr[self._cube_id]
+        self._cube_qadr = int(self._model.jnt_qposadr[_jnt])
+
+        self._arm_jnt_qadr = [
+            int(self._model.jnt_qposadr[
+                self._model.joint(name).id
+            ])
+            for name in ARM_JOINTS
+        ]
+        self._arm_act_ids = [
+            mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_ACTUATOR, name)
+            for name in ARM_JOINTS
+        ]
+
+        # EE controller
+        self._ctrl = EEController()
+
+        # Reference paths (robot frame) and the recorded start yaw of each
+        self.split = split
+        self._episode_ids = None
+        if split is not None:
+            self._paths, self._yaw0, self._episode_ids = self._load_split(
+                split, load_workspace_map(workspace_map_path))
+        elif paths is None:
+            line, arc, s_curve = generate_synthetic_paths()
+            self._paths = [line, arc, s_curve]
+            self._yaw0 = [0.0] * len(self._paths)
+        else:
+            self._paths = list(paths)
+            self._yaw0 = [0.0] * len(self._paths)
+
+        # Centre for placing synthetic / unmapped paths in the robot workspace
+        # (paths from a split are already in the robot frame and are not shifted)
+        self._path_origin_xy = (None if split is not None
+                                else self._find_workspace_centre())
+
+        # Gymnasium spaces
+        n_obs = 2 + 4 + 2 * k_ref
+        self.observation_space = spaces.Box(
+            low=-np.inf, high=np.inf, shape=(n_obs,), dtype=np.float32
+        )
+        self.action_space = spaces.Box(
+            low=-self.max_delta, high=self.max_delta, shape=(2,), dtype=np.float32
+        )
+
+        # Episode state (initialised in reset)
+        self._path: np.ndarray = self._paths[0]
+        self._arc_lengths: np.ndarray = np.array([0.0])
+        self._total_arc_len: float = 0.0
+        self._max_arc_progress: float = 0.0   # fraction in [0, 1], monotone
+        self._step_count: int = 0
+        self._renderer = None
+
+    # ------------------------------------------------------------------
+    # Workspace centre
+    # ------------------------------------------------------------------
+
+    def _find_workspace_centre(self):
+        """Estimate the centroid of FK positions reachable at push height."""
+        from control.kinematics.core import Adjoint, FKinBody, TransInv
+        from control.kinematics.parser import DEFAULT_URDF, findMnS
+
+        M, Slist, limits = findMnS(DEFAULT_URDF)
+        n = Slist.shape[1]
+        Blist = np.array([Adjoint(TransInv(M)) @ Slist[:, i] for i in range(n)]).T
+        z_push = self._cube_height / 2
+        rng = np.random.default_rng(0)
+        positions = []
+        for _ in range(2000):
+            q = rng.uniform(limits[:, 0], limits[:, 1])
+            pos = FKinBody(M, Blist, q)[:3, 3]
+            if abs(pos[2] - z_push) < 0.03:
+                positions.append(pos[:2].copy())
+        if positions:
+            return np.mean(positions, axis=0)
+        # Fallback: FK at q=0 XY
+        return FKinBody(M, Blist, np.zeros(n))[:2, 3].copy()
+
+    def _place_path(self, path_local):
+        """Translate a path (starting at (0,0)) to the robot workspace."""
+        if self._path_origin_xy is None:      # split episode, already in robot frame
+            return path_local
+        return path_local - path_local[0] + self._path_origin_xy
+
+    def _load_split(self, split, ws_map):
+        """Load a split's episodes as (paths, start yaws, episode ids).
+
+        Paths are the cube (x, y) mapped to the robot frame and resampled to the
+        control rate.  The map is a pure scale + translation, so yaw is unchanged.
+        """
+        with open(SPLITS_PATH) as f:
+            splits = json.load(f)
+        if split not in ("train", "test", "showcase"):
+            raise ValueError(f"split must be train, test or showcase, got {split!r}")
+        dt = self._model.opt.timestep * self.n_steps_per_action
+        paths, yaw0 = [], []
+        for ep in splits[split]:
+            d = np.load(PROCESSED_DIR / f"{ep}.npz")
+            pose = resample_episode(d["t"], d["cube_xy_yaw"], dt)
+            paths.append(ws_map.transform(pose[:, :2]))
+            yaw0.append(float(pose[0, 2]))
+        return paths, yaw0, list(splits[split])
+
+    # ------------------------------------------------------------------
+    # Gymnasium API
+    # ------------------------------------------------------------------
+
+    def reset(self, seed=None, options=None):
+        super().reset(seed=seed)  # sets self.np_random
+
+        # Sample a path (reproducible with seed via self.np_random);
+        # options={"episode": i} picks path i instead (deterministic evaluation)
+        idx = int(self.np_random.integers(len(self._paths)))
+        if options and "episode" in options:
+            idx = int(options["episode"])
+        self._path = self._place_path(self._paths[idx])
+        yaw0 = self._yaw0[idx]
+        diffs = np.diff(self._path, axis=0)
+        self._arc_lengths = np.concatenate([[0.0], np.cumsum(np.linalg.norm(diffs, axis=1))])
+        self._total_arc_len = float(self._arc_lengths[-1])
+        self._max_arc_progress = 0.0
+        self._step_count = 0
+
+        # Reset MuJoCo state
+        mujoco.mj_resetData(self._model, self._data)
+
+        # Place cube at the path start with the recorded yaw (0 for synthetic paths)
+        x0, y0 = self._path[0]
+        self._data.qpos[self._cube_qadr:self._cube_qadr + 3] = [x0, y0, self._cube_height / 2]
+        self._data.qpos[self._cube_qadr + 3:self._cube_qadr + 7] = [
+            np.cos(yaw0 / 2), 0.0, 0.0, np.sin(yaw0 / 2)]   # qw, qx, qy, qz
+
+        # Home the robot (q=0, ctrl=0)
+        for qadr, aid in zip(self._arm_jnt_qadr, self._arm_act_ids):
+            self._data.qpos[qadr] = 0.0
+            if aid >= 0:
+                self._data.ctrl[aid] = 0.0
+
+        mujoco.mj_forward(self._model, self._data)
+        self._ctrl.reset(q0=np.zeros(len(ARM_JOINTS)),
+                         z_push=self._cube_height / 2)
+
+        info = {"episode_id": self._episode_ids[idx] if self._episode_ids else None}
+        return self._get_obs(), info
+
+    def step(self, action):
+        action = np.clip(action, self.action_space.low, self.action_space.high)
+        dx, dy = float(action[0]), float(action[1])
+
+        # Sync controller from actual sim state before solving
+        self._sync_ctrl()
+
+        # Compute new EE target
+        T_cur = self._ctrl.ee_pose()
+        new_xy = T_cur[:2, 3] + np.array([dx, dy])
+        q_new, success = self._ctrl.solve(new_xy)
+
+        if success:
+            for i, aid in enumerate(self._arm_act_ids):
+                if aid >= 0:
+                    self._data.ctrl[aid] = float(q_new[i])
+
+        for _ in range(self.n_steps_per_action):
+            mujoco.mj_step(self._model, self._data)
+
+        self._step_count += 1
+
+        obs = self._get_obs()
+        reward, info = self._compute_reward()
+        terminated = bool(info["success"])
+        truncated  = self._step_count >= self.max_episode_steps
+
+        return obs, float(reward), terminated, truncated, info
+
+    def render(self):
+        if self.render_mode != "rgb_array":
+            return None
+        if self._renderer is None:
+            self._renderer = mujoco.Renderer(self._model, height=480, width=640)
+        cam_id = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_CAMERA, "overhead")
+        self._renderer.update_scene(self._data, camera=cam_id if cam_id >= 0 else -1)
+        return self._renderer.render()
+
+    def close(self):
+        if self._renderer is not None:
+            self._renderer.close()
+            self._renderer = None
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _sync_ctrl(self):
+        """Update controller's internal q from the actual simulation joint positions."""
+        q = np.array([self._data.qpos[qadr] for qadr in self._arm_jnt_qadr])
+        self._ctrl._q = q  # direct write; EEController._q is the warm-start
+
+    def _cube_xy_yaw(self):
+        pos  = self._data.xpos[self._cube_id]
+        quat = self._data.xquat[self._cube_id]   # qw, qx, qy, qz
+        qw, qx, qy, qz = quat
+        yaw = float(np.arctan2(2.0 * (qw * qz + qx * qy),
+                                1.0 - 2.0 * (qy ** 2 + qz ** 2)))
+        return pos[:2].copy(), yaw
+
+    def _arc_progress_frac(self, cube_xy):
+        """Arc-length fraction reached by the cube, monotonically non-decreasing.
+
+        Finds the closest path point to cube_xy, reads its cumulative arc length,
+        and takes the max of the current max and the new value.  This definition
+        matches T4's eval/metrics.py so training and evaluation use the same signal.
+        """
+        dists = np.linalg.norm(self._path - cube_xy, axis=1)
+        idx = int(np.argmin(dists))
+        frac = (self._arc_lengths[idx] / self._total_arc_len
+                if self._total_arc_len > 0 else 0.0)
+        return max(self._max_arc_progress, frac)
+
+    def _get_obs(self):
+        ee_xy = self._ctrl.ee_pose()[:2, 3]
+        cube_xy, yaw = self._cube_xy_yaw()
+        sin_y, cos_y = float(np.sin(yaw)), float(np.cos(yaw))
+
+        # k lookahead points starting at the path index nearest to current progress
+        k = self.k_ref
+        arc_pos = self._max_arc_progress * self._total_arc_len
+        idx0 = int(np.searchsorted(self._arc_lengths, arc_pos))
+        idx0 = min(idx0, len(self._path) - 1)
+        end = min(idx0 + k, len(self._path))
+        pts = self._path[idx0:end]
+        if len(pts) < k:
+            pts = np.vstack([pts, np.tile(self._path[-1], (k - len(pts), 1))])
+
+        R = np.array([[cos_y, sin_y], [-sin_y, cos_y]])
+        pts_cube = (pts - cube_xy) @ R.T
+
+        obs = np.concatenate([ee_xy, cube_xy, [sin_y, cos_y], pts_cube.ravel()])
+        return obs.astype(np.float32)
+
+    def _compute_reward(self):
+        cube_xy, _ = self._cube_xy_yaw()
+        new_prog = self._arc_progress_frac(cube_xy)
+        progress_delta = new_prog - self._max_arc_progress
+        self._max_arc_progress = new_prog
+
+        # Lateral deviation: distance to closest path point
+        dists = np.linalg.norm(self._path - cube_xy, axis=1)
+        pt = self._path[int(np.argmin(dists))]
+        lateral   = float(np.linalg.norm(cube_xy - pt))
+        ee_xy     = self._ctrl.ee_pose()[:2, 3]
+        reach     = float(np.linalg.norm(ee_xy - cube_xy))
+        final_err = float(np.linalg.norm(cube_xy - self._path[-1]))
+        # Arc-length success: same threshold as T4's eval/metrics.py
+        success   = (final_err < 0.02) and (new_prog >= 0.90)
+
+        reward = progress_delta - 0.1 * lateral - 0.01 * reach + (10.0 if success else 0.0)
+        info = {"arc_progress": new_prog, "lateral_dev_m": lateral,
+                "final_err_m": final_err, "success": success}
+        return float(reward), info
+
+
+# Register with gymnasium when this module is imported
+gym.register(
+    id="PushTrack-v0",
+    entry_point="sim.push_env:PushTrackEnv",
+    max_episode_steps=500,
+)
