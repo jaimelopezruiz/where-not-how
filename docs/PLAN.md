@@ -327,8 +327,9 @@ object-aware replay (that is T7).
   **Done 2026-10-08.** Tuned on train only (`results/scripted_tuning_log.csv`): lookahead 2.5 cm, push speed
   3.3 mm/step (6.6 cm/s, inside the recorded 3-9 cm/s). Train 27/27, mean deviation 0.53 cm. Test, run once at the
   final parameters: 6/7, mean deviation 0.59 cm. Failure: ep_027 (turn), the box overshot the corner and the pusher
-  needed a position beyond reach; it stalled until the step limit (final error 20 cm). The env ends an episode at the
-  first success, so final error on successes is capped near 2 cm (1.5-2.0 cm here).
+  needed a position beyond reach; it stalled until the step limit (final error 20 cm). Evaluation runs each episode
+  until the pusher reports done (box within 5 mm of the end) or the step limit, not to the env's first success:
+  final error 0.38 cm on train, 0.34-0.38 cm by category on the six test successes (3.24 cm overall with ep_027).
 
 ## T6: RL policy (P1)
 
@@ -525,8 +526,13 @@ Rotating the cube needs pusher contact-mode switching, so yaw stays P2.
   alternative is a longer capsule below the gripper.
 - 2026-10-08: The observation's EE position is FK of the measured joint angles, not the last IK target, which led the
   arm by up to 3 cm while moving.
-- 2026-10-08: Env speed fell from 127 steps/s (C3.5 commit) to about 3-5 steps/s per env after the T5 changes, almost
-  all in DLS IK (~110 iterations per solve). Must be fixed before C6.3.
+- 2026-10-08: Env speed. Normal rollouts ran at ~220 steps/s; the slowdown was failed IK solves, where the library runs
+  all 200 iterations (~3 ms each) before giving up: 8.5 steps/s when pushing into the base. The wrapper now runs
+  `IKinBodyDLS` in chunks of 2 iterations from the measured joints and stops when the error stops falling (cap 12);
+  same solutions as the 200-iteration call at the env's 2 cm step. 154-256 steps/s in every case tested.
+- 2026-10-08: Evaluation protocol: `evaluate(..., until_done=True)` runs past the env's first success until the
+  controller reports done or the step limit, so final error is where the box ends. The first C5.2 run stopped at the
+  first success (final error capped near 2 cm); re-run once with the same parameters, success and deviation unchanged.
 
 ## What didn't work
 
