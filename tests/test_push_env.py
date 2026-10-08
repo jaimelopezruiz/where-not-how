@@ -2,6 +2,8 @@
 
 Run:  python -m pytest tests/test_push_env.py -v
 """
+import json
+import pathlib
 import time
 
 import numpy as np
@@ -96,4 +98,74 @@ def test_env_throughput():
     print(f"\nPushTrackEnv throughput: {rate:.0f} steps/sec "
           f"({step_count} steps, {done_count} episodes in {elapsed:.2f} s)")
     assert rate > 0, "throughput must be positive"
+    env.close()
+
+
+# ---------------------------------------------------------------------------
+# split= episodes (recorded data through the stored WorkspaceMap)
+# ---------------------------------------------------------------------------
+
+_SPLITS = pathlib.Path("data/splits.json")
+_MAP = pathlib.Path("data/workspace_map.json")
+
+needs_data = pytest.mark.skipif(
+    not (_SPLITS.exists() and _MAP.exists() and pathlib.Path("data/processed").exists()),
+    reason="needs data/splits.json, data/workspace_map.json and data/processed/",
+)
+
+
+def test_resample_episode():
+    """Grid-aligned input is unchanged; a 10 Hz input is interpolated, yaw across ±pi too."""
+    from sim.push_env import resample_episode
+    t = np.arange(5) * 0.05
+    pose = np.column_stack([t, 2 * t, np.full(5, 0.3)])
+    assert np.allclose(resample_episode(t, pose, 0.05), pose)
+
+    t2 = np.array([0.0, 0.1, 0.2])
+    pose2 = np.array([[0.0, 0.0, np.pi - 0.1], [1.0, 0.0, -np.pi + 0.1], [2.0, 0.0, -np.pi + 0.3]])
+    out = resample_episode(t2, pose2, 0.05)
+    assert out.shape == (5, 3)
+    assert np.allclose(out[1, :2], [0.5, 0.0])
+    assert abs(abs(out[1, 2]) - np.pi) < 1e-9     # midway through the wrap, not through 0
+
+
+def test_paths_and_split_are_exclusive():
+    from sim.push_env import PushTrackEnv
+    with pytest.raises(ValueError):
+        PushTrackEnv(paths=[np.zeros((3, 2))], split="train")
+
+
+@needs_data
+def test_split_train_reset_reproducible_and_start_matches_mapped_sample():
+    """Seeded reset on split='train' repeats, and the cube starts at the mapped first sample."""
+    from control.workspace import load_workspace_map
+    from sim.push_env import PushTrackEnv
+
+    with open(_SPLITS) as f:
+        train = json.load(f)["train"]
+    ws_map = load_workspace_map()
+
+    env = PushTrackEnv(split="train")
+    assert env._episode_ids == train            # only train episodes are loaded
+
+    obs1, info1 = env.reset(seed=3)
+    obs2, info2 = env.reset(seed=3)
+    assert info1 == info2 and info1["episode_id"] in train
+    assert np.allclose(obs1, obs2, atol=1e-6)
+
+    d = np.load(pathlib.Path("data/processed") / f"{info1['episode_id']}.npz")
+    x, y, yaw = d["cube_xy_yaw"][0]
+    expected_xy = ws_map.transform(np.array([x, y]))
+    cube_xy, cube_yaw = env._cube_xy_yaw()
+    assert np.allclose(cube_xy, expected_xy, atol=1e-9)
+    assert abs(np.arctan2(np.sin(cube_yaw - yaw), np.cos(cube_yaw - yaw))) < 1e-9
+    env.close()
+
+
+@needs_data
+def test_split_reset_can_select_episode():
+    from sim.push_env import PushTrackEnv
+    env = PushTrackEnv(split="showcase")
+    _, info = env.reset(seed=0, options={"episode": 1})
+    assert info["episode_id"] == env._episode_ids[1]
     env.close()

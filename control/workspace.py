@@ -33,6 +33,9 @@ Synthetic reference paths for C3.2–C3.5 (workflow rule 6; no real data needed)
   s_curve: sinusoidal path, 0.20 m long, amplitude 0.06 m
 All coordinates are in the path frame with the cube start at (0, 0).
 """
+import json
+from pathlib import Path
+
 import numpy as np
 
 # Measured from T1 recordings (decision log 2026-10-08)
@@ -43,10 +46,10 @@ HUMAN_Y_RANGE = (-0.24,  0.07)
 # BASE_FOOTPRINT_RADIUS: max XY radius of SO-101 base body geoms; derived from
 #   MjModel.geom_pos / geom_size analysis of so101_new_calib.xml (2026-10-08).
 BASE_FOOTPRINT_RADIUS = 0.0895  # m
-# REACH_TOLERANCE: KD-tree query radius for EE reachability.  Calibrated at 2×
-#   expected nearest-neighbour distance for 4 000 FK samples at push height
-#   (~326 hits in the valid zone, density ~543/m², NN ~21 mm).
-REACH_TOLERANCE = 0.030  # m
+# REACH_TOLERANCE: KD-tree query radius for EE reachability, 2x the median
+#   nearest-neighbour spacing of the 20 000-sample FK set at push height
+#   (1741 hits, median NN 5.97 mm, seed 42; measured 2026-10-08).
+REACH_TOLERANCE = 0.012  # m
 
 
 def generate_synthetic_paths(n: int = 60):
@@ -178,7 +181,7 @@ class WorkspaceMap:
         range, 1 cm steps).  Returns the LARGEST scale that achieves the best
         feasibility count.
 
-        Feasibility criterion per trajectory: ≥ 95 % of path points satisfy
+        Feasibility criterion per trajectory: 100 % of path points satisfy
         both cube clearance (a) and pusher reachability (b).
 
         :param trajectories_xy:  list of (N_i, 2) arrays in human table coords.
@@ -211,7 +214,7 @@ class WorkspaceMap:
                 dnorm = np.where(dnorm < 1e-9, 1.0, dnorm)
                 dirs = np.concatenate([diffs / dnorm, diffs[-1:] / dnorm[-1:]], axis=0)
                 pd, _ = tree.query(mapped - pusher_offset * dirs)
-                if (cube_ok & (pd <= reach_tolerance)).mean() >= 0.95:
+                if (cube_ok & (pd <= reach_tolerance)).all():
                     n += 1
             return n
 
@@ -312,3 +315,99 @@ def report_reachable(ws_map, reachable_xy_robot):
         results[name] = frac
         print(f"  {name:10s}: {frac * 100:.1f}% reachable")
     return results
+
+
+# ---------------------------------------------------------------------------
+# Train-only fit and the stored map (single source of scale/offset for the env)
+# ---------------------------------------------------------------------------
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+WORKSPACE_MAP_PATH = REPO_ROOT / "data" / "workspace_map.json"
+PUSHER_MARGIN = 0.010  # m, clearance between cube corner and pusher capsule
+
+
+def sample_reachable_xy(n_samples: int = 20_000, seed: int = 42,
+                        z_push: float = 0.01625, z_tol: float = 0.025):
+    """(M, 2) FK-sampled EE positions within z_tol of z_push (robot base frame)."""
+    from control.kinematics.core import Adjoint, FKinBody, TransInv
+    from control.kinematics.parser import DEFAULT_URDF, findMnS
+
+    M, Slist, limits = findMnS(DEFAULT_URDF)
+    n = Slist.shape[1]
+    Blist = np.array([Adjoint(TransInv(M)) @ Slist[:, i] for i in range(n)]).T
+    rng = np.random.default_rng(seed)
+    hits = []
+    for _ in range(n_samples):
+        q = rng.uniform(limits[:, 0], limits[:, 1])
+        pos = FKinBody(M, Blist, q)[:3, 3]
+        if abs(pos[2] - z_push) < z_tol:
+            hits.append(pos[:2].copy())
+    return np.array(hits)
+
+
+def median_nn_spacing(points_xy) -> float:
+    """Median distance from each point to its nearest other point (m)."""
+    from scipy.spatial import cKDTree
+    d, _ = cKDTree(np.asarray(points_xy, dtype=float)).query(points_xy, k=2)
+    return float(np.median(d[:, 1]))
+
+
+def fit_train_map(splits_path=None, processed_dir=None, props_path=None,
+                  n_samples: int = 200_000, seed: int = 42):
+    """Fit the WorkspaceMap on the TRAIN split only.
+
+    200 000 FK samples (~3 min, 17 280 hits, median NN 1.9 mm) rather than 20 000:
+    at 20 000 the sample has holes wider than REACH_TOLERANCE and no trajectory
+    passes the 100 % test, although the reachable region itself is filled.
+
+    :returns: (WorkspaceMap, n_feasible, n_train, info) where info holds the
+              fit inputs (r_min_cube, pusher_offset, reach_tolerance, n_fk_samples).
+    """
+    from capture.common import DEFAULT_PROPS, load_props
+    from sim.scene import PUSHER_CAPSULE_RADIUS
+
+    splits_path = Path(splits_path) if splits_path else REPO_ROOT / "data" / "splits.json"
+    processed_dir = Path(processed_dir) if processed_dir else REPO_ROOT / "data" / "processed"
+    with open(splits_path) as f:
+        train_eps = json.load(f)["train"]
+    trajs = [np.load(processed_dir / f"{ep}.npz")["cube_xy_yaw"][:, :2] for ep in train_eps]
+
+    props = load_props(props_path or DEFAULT_PROPS, require=("cube_side",))
+    r_half_diag = np.sqrt(2.0) * props["cube_side"] / 2.0
+    r_min_cube = BASE_FOOTPRINT_RADIUS + r_half_diag
+    pusher_offset = r_half_diag + PUSHER_CAPSULE_RADIUS + PUSHER_MARGIN
+
+    reach = sample_reachable_xy(n_samples=n_samples, seed=seed)
+    ws_map, n_ok = WorkspaceMap.fit_feasible(trajs, reach, r_min_cube, pusher_offset)
+    info = {"r_min_cube": float(r_min_cube), "pusher_offset": float(pusher_offset),
+            "reach_tolerance": REACH_TOLERANCE, "n_fk_samples": int(len(reach)),
+            "median_nn_spacing_m": median_nn_spacing(reach)}
+    return ws_map, n_ok, len(trajs), info
+
+
+def save_workspace_map(ws_map, n_feasible, n_train, info, path=WORKSPACE_MAP_PATH):
+    out = {"scale": ws_map.scale, "offset_xy": ws_map.offset_xy.tolist(),
+           "fitted_on": "train", "n_feasible": int(n_feasible), "n_train": int(n_train),
+           **info}
+    with open(path, "w", newline="\n") as f:
+        json.dump(out, f, indent=2)
+        f.write("\n")
+
+
+def load_workspace_map(path=WORKSPACE_MAP_PATH):
+    """Load the stored map (run ``python -m control.workspace`` to create it)."""
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"{path} missing; run: python -m control.workspace")
+    with open(path) as f:
+        d = json.load(f)
+    return WorkspaceMap(d["scale"], d["offset_xy"])
+
+
+if __name__ == "__main__":
+    ws, n_ok, n_train, info = fit_train_map()
+    save_workspace_map(ws, n_ok, n_train, info)
+    print(f"median NN spacing {info['median_nn_spacing_m'] * 1000:.2f} mm, "
+          f"tolerance {REACH_TOLERANCE * 1000:.1f} mm, {info['n_fk_samples']} FK samples")
+    print(f"scale={ws.scale:.4f}  offset=({ws.offset_xy[0]:.4f}, {ws.offset_xy[1]:.4f})  "
+          f"feasible {n_ok}/{n_train}  -> {WORKSPACE_MAP_PATH}")

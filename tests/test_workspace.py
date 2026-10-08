@@ -60,7 +60,7 @@ def test_transform_is_affine():
 
 def test_reachable_fraction_synthetic():
     """from_robot_reach returns a map with > 50 % reachable on all synthetic paths."""
-    ws_map, reachable_xy = WorkspaceMap.from_robot_reach(n_samples=2000, seed=42)
+    ws_map, reachable_xy = WorkspaceMap.from_robot_reach(n_samples=20_000, seed=42)
 
     line, arc, s_curve = generate_synthetic_paths()
     hx = (-0.37 + -0.08) / 2
@@ -88,79 +88,39 @@ def test_fit_function_exists():
     assert ws_map.offset_xy.shape == (2,)
 
 
+@pytest.mark.slow
 def test_fit_on_train_data():
-    """Fit WorkspaceMap on train split using the feasibility-maximising algorithm.
+    """Fit on the train split only: every train trajectory 100 % feasible, and the
+    stored data/workspace_map.json equals a fresh fit.
 
-    Physical parameters (SO-101 + 81 mm cube):
-      BASE_FOOTPRINT_RADIUS = 0.0895 m  (from SO-101 base geom analysis)
-      cube_side             = 0.081  m  (from props.yaml)
-      r_half_diag           = sqrt(2) * 0.081 / 2 = 0.057 m
-      r_min_cube            = 0.0895 + 0.057 = 0.147 m
-      PUSHER_CAPSULE_RADIUS = 0.006  m  (capsule in scene.py)
-      pusher_offset         = 0.057 + 0.006 + 0.010 = 0.073 m
-
-    Prints a per-episode report.  Run with -s to see it.
-    Skipped if data/processed/ is not present (CI without recorded data).
+    Physical parameters (SO-101 + 81 mm cube) are derived inside fit_train_map:
+      r_min_cube    = 0.0895 + sqrt(2) * 0.081 / 2 = 0.147 m
+      pusher_offset = 0.057 + 0.006 + 0.010 = 0.073 m
+    The fit uses 200 000 FK samples (~3 min), hence the slow marker.
+    Run with -s to see the per-episode report.
     """
+    from control.workspace import (REACH_TOLERANCE, WORKSPACE_MAP_PATH,
+                                   fit_train_map)
+
     if not _SPLITS.exists() or not _PROCESSED.exists():
         pytest.skip("data/splits.json or data/processed/ not found")
 
-    from control.kinematics.core import Adjoint, FKinBody, TransInv
-    from control.kinematics.parser import DEFAULT_URDF, findMnS
-    from sim.scene import BASE_FOOTPRINT_RADIUS, PUSHER_CAPSULE_RADIUS
-
-    with open(_SPLITS) as f:
-        splits = json.load(f)
-    train_eps = splits["train"]
-
-    # Load train trajectories (human table frame, metres); TRAIN ONLY
-    trajectories = []
-    for ep in train_eps:
-        ep_data = np.load(_PROCESSED / f"{ep}.npz")
-        trajectories.append(ep_data["cube_xy_yaw"][:, :2].copy())
-
-    # Dense FK sample at push height (20 000 random configs → ~1 700 hits)
-    M, Slist, limits = findMnS(DEFAULT_URDF)
-    n = Slist.shape[1]
-    Blist = np.array([Adjoint(TransInv(M)) @ Slist[:, i] for i in range(n)]).T
-    rng = np.random.default_rng(42)
-    z_push, z_tol = 0.01625, 0.025
-    _hits = []
-    for _ in range(20_000):
-        q = rng.uniform(limits[:, 0], limits[:, 1])
-        pos = FKinBody(M, Blist, q)[:3, 3]
-        if abs(pos[2] - z_push) < z_tol:
-            _hits.append(pos[:2].copy())
-    reachable_xy = np.array(_hits) if _hits else np.zeros((4, 2))
-
-    # Physical parameters
-    cube_side    = 0.081          # from props.yaml (cube/side_mm: 81)
-    r_half_diag  = np.sqrt(2) * cube_side / 2
-    r_min_cube   = BASE_FOOTPRINT_RADIUS + r_half_diag
-    pusher_offset = r_half_diag + PUSHER_CAPSULE_RADIUS + 0.010  # 10 mm margin
-
-    print(f"\n--- Feasibility-maximising WorkspaceMap fit ---")
-    print(f"  r_min_cube={r_min_cube:.4f} m  pusher_offset={pusher_offset:.4f} m")
-    print(f"  FK sample: {len(reachable_xy)} positions at push height")
-
-    ws_map, n_feasible = WorkspaceMap.fit_feasible(
-        trajectories, reachable_xy, r_min_cube, pusher_offset
-    )
-
+    ws_map, n_feasible, n_train, info = fit_train_map()
+    print(f"\n  median NN {info['median_nn_spacing_m'] * 1000:.2f} mm, "
+          f"tolerance {REACH_TOLERANCE * 1000:.1f} mm, {info['n_fk_samples']} FK samples")
     print(f"  scale  = {ws_map.scale:.4f}")
     print(f"  offset = ({ws_map.offset_xy[0]:.4f}, {ws_map.offset_xy[1]:.4f}) m")
-    print(f"  feasible train trajectories: {n_feasible}/{len(train_eps)}")
-    print()
+    print(f"  feasible train trajectories: {n_feasible}/{n_train}")
 
-    for ep, traj in zip(train_eps, trajectories):
-        frac = ws_map.path_feasibility_fraction(traj, reachable_xy, r_min_cube, pusher_offset)
-        tag = "OK" if frac >= 0.95 else "PARTIAL"
-        print(f"  {tag}  {ep}: {frac * 100:5.1f}% feasible")
-
-    # Assertions
     assert 0.0 < ws_map.scale <= 1.0
-    assert ws_map.offset_xy.shape == (2,)
-    assert n_feasible >= 20, f"only {n_feasible}/27 train trajectories feasible"
+    assert n_feasible == n_train, f"only {n_feasible}/{n_train} train trajectories 100% feasible"
+
+    if WORKSPACE_MAP_PATH.exists():
+        with open(WORKSPACE_MAP_PATH) as f:
+            stored = json.load(f)
+        assert stored["fitted_on"] == "train"
+        assert np.isclose(stored["scale"], ws_map.scale)
+        assert np.allclose(stored["offset_xy"], ws_map.offset_xy)
 
 
 def test_infeasible_positions():
