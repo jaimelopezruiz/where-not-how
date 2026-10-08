@@ -199,6 +199,8 @@ Statuses: `todo` / `in progress` / `done` / `blocked` / `cut`.
   (x, y, yaw) in the z-up table frame matches. Catches OpenCV's y-down/z-in frame leaking through, and a flipped yaw sign.
   **Done 2026-10-07.** Marker pose from `solvePnP` (IPPE_SQUARE + LM, as in `live_check`) in the per-frame board frame,
   then into the table frame. Cube detected in 100% of frames of all 38 episodes, no frame dropped by any gate.
+  C1.3's QA said 37 of 38; the one miss is unidentified and not reproducible: marker 10 is found in every frame of all
+  38 under OpenCV 4.13 and 5.0, with and without sub-pixel refinement (the QA script is not in the repo).
   **Tests** (`tests/test_extract.py`): analytic scene with a table tilted 4.5, -7 and 5 deg (about board y and x)
   and a 0 deg control, camera drifting and shaking, 2-marker poses 20 mm off during a 50-frame occlusion: x, y, yaw
   exact to 1e-6 including the held frames. Rendered board + cube through the detector: x, y within 5 mm, yaw within
