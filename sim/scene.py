@@ -37,6 +37,10 @@ PUSHER_SITE = "pusher_tip" # site added by build_push_scene_xml for contact trac
 # Arm joints in PoE column order (matches fk_check.arm_joint_names / findMnS)
 ARM_JOINTS = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll"]
 
+# Physical constants derived from the SO-101 MJCF and scene geometry
+PUSHER_CAPSULE_RADIUS = 0.006   # capsule radius (m); geom in build_friction_test_xml
+BASE_FOOTPRINT_RADIUS = 0.0895  # max XY radius of base body geoms (m); from mj_name2id analysis
+
 
 def _box_inertia(mass, side, height):
     """Principal inertia of a solid box with square base (side × side × height)."""

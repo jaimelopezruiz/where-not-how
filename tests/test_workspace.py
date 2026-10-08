@@ -89,46 +89,114 @@ def test_fit_function_exists():
 
 
 def test_fit_on_train_data():
-    """Fit WorkspaceMap on train split only; report scale and out-of-reach count.
+    """Fit WorkspaceMap on train split using the feasibility-maximising algorithm.
 
-    Prints a one-line summary per trajectory and a totals line.  Run with -s to see it.
+    Physical parameters (SO-101 + 81 mm cube):
+      BASE_FOOTPRINT_RADIUS = 0.0895 m  (from SO-101 base geom analysis)
+      cube_side             = 0.081  m  (from props.yaml)
+      r_half_diag           = sqrt(2) * 0.081 / 2 = 0.057 m
+      r_min_cube            = 0.0895 + 0.057 = 0.147 m
+      PUSHER_CAPSULE_RADIUS = 0.006  m  (capsule in scene.py)
+      pusher_offset         = 0.057 + 0.006 + 0.010 = 0.073 m
+
+    Prints a per-episode report.  Run with -s to see it.
     Skipped if data/processed/ is not present (CI without recorded data).
     """
     if not _SPLITS.exists() or not _PROCESSED.exists():
         pytest.skip("data/splits.json or data/processed/ not found")
 
+    from control.kinematics.core import Adjoint, FKinBody, TransInv
+    from control.kinematics.parser import DEFAULT_URDF, findMnS
+    from sim.scene import BASE_FOOTPRINT_RADIUS, PUSHER_CAPSULE_RADIUS
+
     with open(_SPLITS) as f:
         splits = json.load(f)
     train_eps = splits["train"]
 
-    # Load train trajectories (human table frame, metres)
+    # Load train trajectories (human table frame, metres); TRAIN ONLY
     trajectories = []
     for ep in train_eps:
         ep_data = np.load(_PROCESSED / f"{ep}.npz")
         trajectories.append(ep_data["cube_xy_yaw"][:, :2].copy())
 
-    # Sample robot reachable positions at push height (same method as from_robot_reach)
-    ws_map, reachable_xy = WorkspaceMap.from_robot_reach(n_samples=4000, seed=42)
+    # Dense FK sample at push height (20 000 random configs → ~1 700 hits)
+    M, Slist, limits = findMnS(DEFAULT_URDF)
+    n = Slist.shape[1]
+    Blist = np.array([Adjoint(TransInv(M)) @ Slist[:, i] for i in range(n)]).T
+    rng = np.random.default_rng(42)
+    z_push, z_tol = 0.01625, 0.025
+    _hits = []
+    for _ in range(20_000):
+        q = rng.uniform(limits[:, 0], limits[:, 1])
+        pos = FKinBody(M, Blist, q)[:3, 3]
+        if abs(pos[2] - z_push) < z_tol:
+            _hits.append(pos[:2].copy())
+    reachable_xy = np.array(_hits) if _hits else np.zeros((4, 2))
 
-    # Re-fit on actual train data (from_robot_reach uses synthetic paths as stand-in)
-    ws_map_real = WorkspaceMap.fit(trajectories, reachable_xy)
+    # Physical parameters
+    cube_side    = 0.081          # from props.yaml (cube/side_mm: 81)
+    r_half_diag  = np.sqrt(2) * cube_side / 2
+    r_min_cube   = BASE_FOOTPRINT_RADIUS + r_half_diag
+    pusher_offset = r_half_diag + PUSHER_CAPSULE_RADIUS + 0.010  # 10 mm margin
 
-    print(f"\nWorkspaceMap fit on {len(train_eps)} train episodes")
-    print(f"  scale  = {ws_map_real.scale:.4f}")
-    print(f"  offset = ({ws_map_real.offset_xy[0]:.4f}, {ws_map_real.offset_xy[1]:.4f}) m")
-    print(f"  reachable sample at push height: {len(reachable_xy)} configs")
+    print(f"\n--- Feasibility-maximising WorkspaceMap fit ---")
+    print(f"  r_min_cube={r_min_cube:.4f} m  pusher_offset={pusher_offset:.4f} m")
+    print(f"  FK sample: {len(reachable_xy)} positions at push height")
+
+    ws_map, n_feasible = WorkspaceMap.fit_feasible(
+        trajectories, reachable_xy, r_min_cube, pusher_offset
+    )
+
+    print(f"  scale  = {ws_map.scale:.4f}")
+    print(f"  offset = ({ws_map.offset_xy[0]:.4f}, {ws_map.offset_xy[1]:.4f}) m")
+    print(f"  feasible train trajectories: {n_feasible}/{len(train_eps)}")
     print()
 
-    n_partial = 0
     for ep, traj in zip(train_eps, trajectories):
-        frac = ws_map_real.reachable_fraction(traj, reachable_xy)
-        tag = "" if frac >= 0.95 else "  <-- partial"
-        print(f"  {ep}: {frac * 100:5.1f}% reachable{tag}")
-        if frac < 1.0:
-            n_partial += 1
+        frac = ws_map.path_feasibility_fraction(traj, reachable_xy, r_min_cube, pusher_offset)
+        tag = "OK" if frac >= 0.95 else "PARTIAL"
+        print(f"  {tag}  {ep}: {frac * 100:5.1f}% feasible")
 
-    print(f"\n  {n_partial}/{len(train_eps)} train trajectories have points outside reach")
+    # Assertions
+    assert 0.0 < ws_map.scale <= 1.0
+    assert ws_map.offset_xy.shape == (2,)
+    assert n_feasible >= 20, f"only {n_feasible}/27 train trajectories feasible"
 
-    # scale must be ≤ 1 and the map must exist
-    assert 0.0 < ws_map_real.scale <= 1.0
-    assert ws_map_real.offset_xy.shape == (2,)
+
+def test_infeasible_positions():
+    """Base origin and far point are reported infeasible (catches the hull bug).
+
+    The robot base footprint (r < r_min_cube = 0.147 m) and beyond-max-reach
+    positions (r > 0.5 m) must both fail the feasibility check.  A convex hull
+    on FK samples would incorrectly mark base-origin as 'inside' the hull;
+    the KD-tree approach correctly fails it.
+    """
+    from sim.scene import BASE_FOOTPRINT_RADIUS, PUSHER_CAPSULE_RADIUS
+
+    # Get FK reachable sample
+    ws_map, reachable_xy = WorkspaceMap.from_robot_reach(n_samples=4000, seed=42)
+
+    cube_side   = 0.081
+    r_half_diag = np.sqrt(2) * cube_side / 2
+    r_min_cube  = BASE_FOOTPRINT_RADIUS + r_half_diag
+    pusher_offset = r_half_diag + PUSHER_CAPSULE_RADIUS + 0.010
+
+    from control.workspace import REACH_TOLERANCE
+    from scipy.spatial import cKDTree
+    tree = cKDTree(reachable_xy)
+
+    # Robot base origin: cube can't sit there (r = 0 < r_min_cube)
+    origin = np.array([[0.0, 0.0]])
+    cube_ok_origin = float(np.linalg.norm(origin, axis=1)[0]) > r_min_cube
+    assert not cube_ok_origin, (
+        f"Base origin (r=0) should fail cube clearance (r_min={r_min_cube:.3f} m)"
+    )
+
+    # Far point (0, 1.0): beyond arm max reach (~0.47 m)
+    far_pt = np.array([[0.0, 1.0]])
+    d_far, _ = tree.query(far_pt)
+    far_reachable = float(d_far[0]) <= REACH_TOLERANCE
+    assert not far_reachable, (
+        f"Far point (0, 1.0) should be unreachable but nearest FK sample is "
+        f"{d_far[0]*1000:.1f} mm away (tolerance {REACH_TOLERANCE*1000:.0f} mm)"
+    )

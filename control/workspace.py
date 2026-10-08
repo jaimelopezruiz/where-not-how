@@ -9,13 +9,23 @@ factor.  The map never expands; it only shrinks and shifts.
 Human workspace (from the T1 recordings, table frame):
     x ∈ [−0.37, −0.08] m,  y ∈ [−0.24, 0.07] m  (≈ 0.29 × 0.31 m)
 
-The class has two constructors:
-  fit(trajectories_xy, reachable_xy)  -- fit from a list of human-frame paths and
-                                         a sample of reachable robot EE positions.
-                                         Call this once the train split is extracted.
-  from_robot_reach(...)               -- sample robot workspace by FK to get
-                                         reachable_xy, then fit; for use before
-                                         real trajectories are available.
+The class has three constructors:
+  fit(trajectories_xy, reachable_xy)       -- centroid-based fit; fast, no
+                                              feasibility check.
+  fit_feasible(trajectories_xy, ...)       -- sweep scale 1→0.5, maximise
+                                              n_feasible train trajectories.
+  from_robot_reach(...)                    -- sample robot workspace by FK to get
+                                              reachable_xy, then call fit().
+
+Reachability check: a KD-tree on FK-sampled EE positions replaces the former
+convex-hull test.  The hull incorrectly treated the inner unreachable zone
+(near the robot base, inside the arm's arc) as reachable.
+
+Feasibility of a path point requires both:
+  (a) norm(robot_xy) > r_min_cube = BASE_FOOTPRINT_RADIUS + cube_half_diagonal
+      [cube footprint clears the robot base column]
+  (b) nearest FK sample to the pusher position is within REACH_TOLERANCE
+      [EE can physically reach the pusher position]
 
 Synthetic reference paths for C3.2–C3.5 (workflow rule 6; no real data needed):
   line:    0.25 m straight push in +x
@@ -28,6 +38,15 @@ import numpy as np
 # Measured from T1 recordings (decision log 2026-10-08)
 HUMAN_X_RANGE = (-0.37, -0.08)
 HUMAN_Y_RANGE = (-0.24,  0.07)
+
+# SO-101 physical constants used for feasibility checks
+# BASE_FOOTPRINT_RADIUS: max XY radius of SO-101 base body geoms; derived from
+#   MjModel.geom_pos / geom_size analysis of so101_new_calib.xml (2026-10-08).
+BASE_FOOTPRINT_RADIUS = 0.0895  # m
+# REACH_TOLERANCE: KD-tree query radius for EE reachability.  Calibrated at 2×
+#   expected nearest-neighbour distance for 4 000 FK samples at push height
+#   (~326 hits in the valid zone, density ~543/m², NN ~21 mm).
+REACH_TOLERANCE = 0.030  # m
 
 
 def generate_synthetic_paths(n: int = 60):
@@ -69,32 +88,59 @@ class WorkspaceMap:
         """Map (N, 2) or (2,) human table coords → robot base-frame EE (x, y)."""
         return self.scale * np.asarray(xy_human, dtype=float) + self.offset_xy
 
-    def reachable_fraction(self, path_xy_human, reachable_xy_robot, margin: float = 0.005):
-        """Fraction of mapped path points inside the robot's reachable hull.
+    def reachable_fraction(self, path_xy_human, reachable_xy_robot,
+                           tolerance: float = REACH_TOLERANCE):
+        """Fraction of mapped path points within tolerance of any FK sample.
 
-        Uses the convex hull of reachable_xy_robot (at the push height), expanded
-        by margin metres.  Falls back to a circle test if the hull cannot be built.
+        Uses a KD-tree on reachable_xy_robot (EE positions sampled at push height).
+        The former convex-hull test over-counted positions inside the unreachable
+        inner zone near the robot base (the reachable set is annular, so the hull
+        filled the gap).
 
         :param path_xy_human:      (N, 2) path in human table coords.
         :param reachable_xy_robot: (M, 2) sampled EE positions at push height.
-        :param margin:             Tolerance in metres (default 5 mm).
+        :param tolerance:          KD-tree query radius (m).
         :returns: float in [0, 1].
         """
-        from scipy.spatial import ConvexHull, QhullError
-
+        from scipy.spatial import cKDTree
         mapped = self.transform(np.asarray(path_xy_human, dtype=float))
-        reach  = np.asarray(reachable_xy_robot, dtype=float)
+        tree = cKDTree(np.asarray(reachable_xy_robot, dtype=float))
+        dists, _ = tree.query(mapped)
+        return float((dists <= tolerance).mean())
 
-        try:
-            hull = ConvexHull(reach)
-            A, b = hull.equations[:, :2], hull.equations[:, 2]
-            inside = np.all(mapped @ A.T + b[None, :] <= margin, axis=1)
-        except (QhullError, ValueError):
-            c = reach.mean(axis=0)
-            r = np.linalg.norm(reach - c, axis=1).max()
-            inside = np.linalg.norm(mapped - c, axis=1) <= r + margin
+    def path_feasibility_fraction(self, path_xy_human, reachable_xy_robot,
+                                   r_min_cube: float, pusher_offset: float,
+                                   reach_tolerance: float = REACH_TOLERANCE):
+        """Fraction of path points feasible: cube clears base AND pusher reachable.
 
-        return float(inside.mean())
+        For each mapped path point p:
+          (a) norm(p) > r_min_cube       -- cube footprint clears the robot body
+          (b) nearest FK sample to the pusher position is within reach_tolerance
+
+        The local push direction d at each point is the unit tangent along the
+        mapped path; pusher_xy = p − pusher_offset · d.
+
+        :param r_min_cube:    Minimum robot-frame radius for the cube centre (m).
+                              Typically BASE_FOOTPRINT_RADIUS + cube_half_diagonal.
+        :param pusher_offset: Distance from cube centre to pusher EE centre (m).
+                              Typically cube_half_diagonal + capsule_r + margin.
+        :returns: float in [0, 1].
+        """
+        from scipy.spatial import cKDTree
+        mapped = self.transform(np.asarray(path_xy_human, dtype=float))
+        tree = cKDTree(np.asarray(reachable_xy_robot, dtype=float))
+
+        cube_ok = np.linalg.norm(mapped, axis=1) > r_min_cube
+
+        diffs = np.diff(mapped, axis=0)
+        dnorm = np.linalg.norm(diffs, axis=1, keepdims=True)
+        dnorm = np.where(dnorm < 1e-9, 1.0, dnorm)
+        dirs = np.concatenate([diffs / dnorm, diffs[-1:] / dnorm[-1:]], axis=0)
+
+        pd, _ = tree.query(mapped - pusher_offset * dirs)
+        pusher_ok = pd <= reach_tolerance
+
+        return float((cube_ok & pusher_ok).mean())
 
     @classmethod
     def fit(cls, trajectories_xy, reachable_xy_robot):
@@ -120,6 +166,81 @@ class WorkspaceMap:
         return cls(scale, offset)
 
     @classmethod
+    def fit_feasible(cls, trajectories_xy, reachable_xy,
+                     r_min_cube: float, pusher_offset: float,
+                     reach_tolerance: float = REACH_TOLERANCE):
+        """Fit (scale ≤ 1, offset) maximising feasible trajectories.
+
+        Sweeps scale 1.0 → 0.50 (step 0.05).  At each scale the offset_y aligns
+        the trajectory centroid with the valid-reach centroid (FK positions at
+        r > r_min_cube).  offset_x is searched from the minimum that keeps the
+        workspace inner edge clear of the base exclusion zone upward (+15 cm
+        range, 1 cm steps).  Returns the LARGEST scale that achieves the best
+        feasibility count.
+
+        Feasibility criterion per trajectory: ≥ 95 % of path points satisfy
+        both cube clearance (a) and pusher reachability (b).
+
+        :param trajectories_xy:  list of (N_i, 2) arrays in human table coords.
+        :param reachable_xy:     (M, 2) FK-sampled EE positions at push height.
+        :param r_min_cube:       Minimum cube-centre radius from robot base (m).
+        :param pusher_offset:    Cube-centre to pusher distance in push dir (m).
+        :param reach_tolerance:  KD-tree query radius (m).
+        :returns: (WorkspaceMap, n_feasible)
+        """
+        from scipy.spatial import cKDTree
+
+        trajs = [np.asarray(t, dtype=float) for t in trajectories_xy]
+        all_pts = np.concatenate(trajs, axis=0)
+        traj_cy = all_pts[:, 1].mean()
+        x_min_human = all_pts[:, 0].min()
+
+        reach = np.asarray(reachable_xy, dtype=float)
+        valid_mask = np.linalg.norm(reach, axis=1) > r_min_cube
+        valid_cy = reach[valid_mask, 1].mean() if valid_mask.any() else 0.0
+
+        tree = cKDTree(reach)
+
+        def _n_ok(scale, offset):
+            n = 0
+            for traj in trajs:
+                mapped = scale * traj + offset
+                cube_ok = np.linalg.norm(mapped, axis=1) > r_min_cube
+                diffs = np.diff(mapped, axis=0)
+                dnorm = np.linalg.norm(diffs, axis=1, keepdims=True)
+                dnorm = np.where(dnorm < 1e-9, 1.0, dnorm)
+                dirs = np.concatenate([diffs / dnorm, diffs[-1:] / dnorm[-1:]], axis=0)
+                pd, _ = tree.query(mapped - pusher_offset * dirs)
+                if (cube_ok & (pd <= reach_tolerance)).mean() >= 0.95:
+                    n += 1
+            return n
+
+        best_n = -1
+        best_scale = 0.5
+        best_offset = np.zeros(2)
+
+        for scale in np.arange(1.0, 0.45, -0.05):
+            oy = valid_cy - scale * traj_cy
+            # ox_lo: smallest offset_x that keeps the inner workspace edge at
+            # x_robot >= r_min_cube (tight clearance at y ≈ 0)
+            ox_lo = r_min_cube + 0.005 - scale * x_min_human
+            best_n_s, best_ox = -1, ox_lo
+            for ox in np.arange(ox_lo - 0.01, ox_lo + 0.16, 0.01):
+                n = _n_ok(scale, np.array([ox, oy]))
+                if n > best_n_s:
+                    best_n_s, best_ox = n, ox
+
+            if best_n_s > best_n:     # strictly better → prefer larger scale
+                best_n = best_n_s
+                best_scale = float(scale)
+                best_offset = np.array([best_ox, oy])
+
+            if best_n == len(trajs):
+                break                 # all feasible; largest scale wins
+
+        return cls(best_scale, best_offset), best_n
+
+    @classmethod
     def from_robot_reach(cls, urdf_path=None, z_push: float = 0.01625,
                          z_tol: float = 0.025, n_samples: int = 4000, seed: int = 42):
         """Fit by sampling the robot's FK workspace at the push height.
@@ -133,7 +254,7 @@ class WorkspaceMap:
         :param n_samples: Number of random FK evaluations.
         :param seed:      RNG seed for reproducibility.
         :returns: (WorkspaceMap, reachable_xy) where reachable_xy is the (M, 2)
-                  EE position sample used to build the hull.
+                  EE position sample used for KD-tree reachability queries.
         """
         from control.kinematics.core import Adjoint, FKinBody, TransInv
         from control.kinematics.parser import DEFAULT_URDF, findMnS
