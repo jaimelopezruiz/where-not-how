@@ -161,6 +161,11 @@ class ScriptedPusher:
         self._last_cmd = vec = vec * self._scale
         return vec
 
+    def executed(self, cmd):
+        """Tell the pusher what was actually commanded last step, when that differs from what act() returned
+        (a residual added on top). Stuck detection then compares the arm's motion with this command."""
+        self._last_cmd = np.asarray(cmd, float).copy()
+
     def _track_following(self, ee):
         """Shorten steps while the arm does not execute them (the IK refuses some long steps near joint limits)."""
         if self._last_ee is not None:

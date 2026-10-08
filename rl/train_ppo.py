@@ -46,10 +46,16 @@ class PolicyActions(gym.Wrapper):
         return obs, reward, terminated, truncated, info
 
 
-def make_env(split, episodes, max_episode_steps, k_ref, seed):
+def make_env(split, episodes, max_episode_steps, k_ref, seed, residual_scale=None):
+    """Training env; residual_scale not None wraps it as a residual on the scripted pusher (C6.5)."""
     from sim.push_env import PushTrackEnv
     env = PushTrackEnv(split=split, episodes=episodes, max_episode_steps=max_episode_steps, k_ref=k_ref)
-    env = Monitor(PolicyActions(env), info_keywords=("is_success",))
+    if residual_scale is None:
+        env = PolicyActions(env)
+    else:
+        from rl.residual import ResidualActions
+        env = ResidualActions(env, residual_scale)
+    env = Monitor(env, info_keywords=("is_success",))
     env.reset(seed=seed)
     return env
 
@@ -69,9 +75,10 @@ class WallClockLimit(BaseCallback):
 class EvalCurve(BaseCallback):
     """Deterministic policy on fixed episodes, scored by eval.metrics under the until-done protocol."""
 
-    def __init__(self, split, episodes, every, run_dir, max_episode_steps, k_ref, label="eval"):
+    def __init__(self, split, episodes, every, run_dir, max_episode_steps, k_ref, label="eval", residual_scale=None):
         super().__init__()
         self.split, self.episodes, self.every = split, episodes, every
+        self.residual_scale = residual_scale
         self.path = Path(run_dir) / f"{label}_curve.csv"
         self.label, self.max_episode_steps, self.k_ref = label, max_episode_steps, k_ref
         self._next, self._env, self._t0 = 0, None, time.time()
@@ -87,8 +94,12 @@ class EvalCurve(BaseCallback):
 
     def _evaluate(self):
         from eval.report import evaluate
-        ctrl = PolicyController(self.model, self.model.get_vec_normalize_env(), k_ref=self.k_ref,
-                                max_delta=self._env.max_delta)
+        vecnorm = self.model.get_vec_normalize_env()
+        if self.residual_scale is None:
+            ctrl = PolicyController(self.model, vecnorm, k_ref=self.k_ref, max_delta=self._env.max_delta)
+        else:
+            from rl.residual import ResidualController
+            ctrl = ResidualController(self.model, vecnorm, self.residual_scale, self._env.max_delta)
         res = evaluate(ctrl, env=self._env, method="ppo")
         row = [self.num_timesteps, round(time.time() - self._t0), np.mean([r["success"] for r in res]),
                np.mean([r["mean_deviation_cm"] for r in res]), np.mean([r["final_error_cm"] for r in res]),
@@ -113,7 +124,7 @@ class EvalCurve(BaseCallback):
 def train(name, split="train", episodes=None, eval_episodes=None, n_envs=8, seed=0, total_steps=50_000_000,
           time_limit_min=None, max_episode_steps=600, k_ref=5, eval_every=50_000, checkpoint_every=250_000,
           n_steps=512, batch_size=256, lr=3e-4, ent_coef=0.0, gamma=0.99, log_std_init=-1.0, resume=False,
-          torch_threads=2):
+          torch_threads=2, residual_scale=None):
     os.environ.setdefault("OMP_NUM_THREADS", "1")      # env workers inherit this: one BLAS thread each
     torch.set_num_threads(torch_threads)
     run = RUNS / name
@@ -122,7 +133,7 @@ def train(name, split="train", episodes=None, eval_episodes=None, n_envs=8, seed
     cfg.pop("run")
     (run / "config.json").write_text(json.dumps(cfg, indent=2, default=str))
 
-    fns = [partial(make_env, split, episodes, max_episode_steps, k_ref, seed + i) for i in range(n_envs)]
+    fns = [partial(make_env, split, episodes, max_episode_steps, k_ref, seed + i, residual_scale) for i in range(n_envs)]
     venv = SubprocVecEnv(fns, start_method="spawn")
     ckpt = sorted(run.glob("rl_model_*_steps.zip"), key=lambda p: int(p.stem.split("_")[2]))
     resuming = bool(resume and ckpt)
@@ -139,7 +150,8 @@ def train(name, split="train", episodes=None, eval_episodes=None, n_envs=8, seed
     model.set_logger(configure(str(run), ["stdout", "csv", "tensorboard"]))
     callbacks = [
         CheckpointCallback(max(checkpoint_every // n_envs, 1), str(run), name_prefix="rl_model", save_vecnormalize=True),
-        EvalCurve(split, eval_episodes or episodes, eval_every, run, max_episode_steps, k_ref),
+        EvalCurve(split, eval_episodes or episodes, eval_every, run, max_episode_steps, k_ref,
+                  residual_scale=residual_scale),
         WallClockLimit(time_limit_min),
     ]
     t0 = time.time()
