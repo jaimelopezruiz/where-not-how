@@ -108,6 +108,7 @@ _PROPS = {
     "board_gap": ("board", "gap_mm", 1000),
     "cube_marker_side": ("cube", "marker_side_mm", 1000),
     "cube_side": ("cube", "side_mm", 1000),
+    "cube_height": ("cube", "height_mm", 1000),
     "cube_mass": ("cube", "mass_g", 1000),
 }
 
