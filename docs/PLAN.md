@@ -45,7 +45,7 @@ Statuses: `todo` / `in progress` / `done` / `blocked` / `cut`.
 | T3  | Simulation env                     | P0  | 3–4 h  | Wed/Thu | done |
 | T4  | Evaluation harness                 | P0  | 2 h    | Thu | done   |
 | T5  | Scripted pusher                    | P0  | 3 h    | Thu | done   |
-| T6  | RL policy                          | P1  | 6–8 h  | Thu/Fri | in progress (C6.4 training) |
+| T6  | RL policy                          | P1  | 6–8 h  | Thu/Fri | in progress (C6.5 training) |
 | T7  | Hand-replay baseline               | P1  | 2 h    | Thu | cut (C7.1 coverage gate) |
 | T8  | Showcase trajectory                | P1  | 1 h    | Fri | todo   |
 | T9  | Data-scaling curve                 | P1  | compute| Thu night | cut  |
@@ -366,6 +366,14 @@ object-aware replay (that is T7).
 - [ ] **C6.5 Fallback: residual RL.** Action = scripted pusher + learned residual. Matches the brief's
   "bootstrap a policy and use RL" suggestion; use only if G3 fails, and say so in the README.
   Residual RL on a base controller is used in HuDOR and ManipTrans.
+  **Code done 2026-10-08** (`rl/residual.py`, `rl/train_residual.py`, `tests/test_residual.py`; `residual_scale`
+  option in `rl/train_ppo.py` and `rl/eval_policy.py`, None = plain PPO). Executed step = scripted pusher step
+  (frozen C5.2 parameters) + 0.25 x max_delta x a (at most 5 mm), clipped per component as the env does; the policy
+  sees the env observation plus the base action / max_delta (18 values); log_std_init -2.0, other settings as C6.4.
+  The pusher's stuck detection is told the executed command (`ScriptedPusher.executed`). Zero residual on train
+  reproduces the frozen scripted result exactly (27/27, 0.534 cm, 0.367 cm). Sanity run (200k steps, 4 envs, 8 train
+  eval episodes): 8/8 at every eval, deviation 0.55-0.65 cm (untrained 0.58; scripted 0.66 on these 8), final error
+  0.35 -> 0.24 cm, episodes 147 -> 122 steps. Full run `residual_s0`: 8 envs, 3M steps.
 - [ ] **C6.6 Time-indexed reward ablation (P2).** The same PPO setup with a time-indexed tracking reward
   (reference point at time t, not at progress p); compare on the test split. Turns claim (4) from a cited design
   choice into a result.
@@ -572,6 +580,10 @@ Rotating the cube needs pusher contact-mode switching, so yaw stays P2.
   0.58 s gap at the start of its contact window (edge tolerance 0.5 s); tolerating edge gaps of any length would give
   4/7 (train 12/27), but that reading came up after the test count was known, so it was not adopted. C2.3 is cut with
   T7. Claim (2) (copying the hand fails hardest at pushing) is therefore not tested here; the README says so.
+- 2026-10-08: Switched T6 to C6.5 at the 2M check instead of waiting for G3 (rule agreed in advance): plain PPO at
+  2M had 2-4% rollout success and its deterministic eval never moved the box along the path. Residual
+  parameters were fixed before the sanity run and not swept. Results from it measure what RL adds to the scripted
+  pusher, not RL learning to push; the README says so.
 
 ## What didn't work
 
