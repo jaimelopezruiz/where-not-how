@@ -1,0 +1,8 @@
+Category        N  Success%  Mean dev (cm)  Final err (cm)  Progress  Time (s)
+------------------------------------------------------------------------------
+showcase        4     100.0           0.65            0.40     0.996      9.78
+
+ep_049: success=True progress=1.00 dev=0.48 cm final=0.38 cm time=5.2 s steps=120
+ep_050: success=True progress=0.99 dev=0.58 cm final=0.40 cm time=10.2 s steps=208
+ep_055: success=True progress=1.00 dev=1.00 cm final=0.48 cm time=13.2 s steps=286
+ep_071: success=True progress=0.99 dev=0.55 cm final=0.33 cm time=10.6 s steps=216
