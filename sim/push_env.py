@@ -40,11 +40,14 @@ Reference paths come from one of three sources, in this order:
                  (control.workspace.load_workspace_map; fitted on train only),
                  resampled to the control rate from `t`, cube placed at the
                  recorded start pose including yaw;
+  episode_files=...  the same for explicit .npz files (the smoke test's synthetic episode); the
+                 episode ids are the file stems;
   neither        synthetic paths from control.workspace.generate_synthetic_paths(),
                  translated to the centre of the robot's reachable workspace.
 """
 import json
 import time
+from pathlib import Path
 
 import gymnasium as gym
 import mujoco
@@ -97,6 +100,7 @@ class PushTrackEnv(gym.Env):
         paths=None,
         split=None,
         workspace_map_path=WORKSPACE_MAP_PATH,
+        episode_files=None,
     ):
         """
         :param k_ref:               Reference points per observation.
@@ -114,9 +118,11 @@ class PushTrackEnv(gym.Env):
         :param split:               "train", "test" or "showcase": use that split's
                                     recorded episodes (mutually exclusive with paths).
         :param workspace_map_path:  Stored WorkspaceMap used for split episodes.
+        :param episode_files:       Processed .npz files used like split episodes (mapped, resampled, start
+                                    yaw); mutually exclusive with `paths` and `split`.
         """
-        if split is not None and paths is not None:
-            raise ValueError("pass either `paths` or `split`, not both")
+        if sum(v is not None for v in (paths, split, episode_files)) > 1:
+            raise ValueError("pass only one of `paths`, `split` and `episode_files`")
         super().__init__()
 
         self.render_mode = render_mode
@@ -170,6 +176,9 @@ class PushTrackEnv(gym.Env):
                 self._paths = [self._paths[i] for i in keep]
                 self._yaw0 = [self._yaw0[i] for i in keep]
                 self._episode_ids = [self._episode_ids[i] for i in keep]
+        elif episode_files is not None:
+            self._paths, self._yaw0, self._episode_ids = self._load_files(
+                episode_files, load_workspace_map(workspace_map_path))
         elif paths is None:
             line, arc, s_curve = generate_synthetic_paths()
             self._paths = [line, arc, s_curve]
@@ -180,7 +189,7 @@ class PushTrackEnv(gym.Env):
 
         # Centre for placing synthetic / unmapped paths in the robot workspace
         # (paths from a split are already in the robot frame and are not shifted)
-        self._path_origin_xy = (None if split is not None
+        self._path_origin_xy = (None if split is not None or episode_files is not None
                                 else self._find_workspace_centre())
 
         # Gymnasium spaces
@@ -263,14 +272,18 @@ class PushTrackEnv(gym.Env):
             splits = json.load(f)
         if split not in ("train", "test", "showcase"):
             raise ValueError(f"split must be train, test or showcase, got {split!r}")
+        return self._load_files([PROCESSED_DIR / f"{ep}.npz" for ep in splits[split]], ws_map)
+
+    def _load_files(self, files, ws_map):
+        """Processed .npz files as (paths, start yaws, ids); ids are the file stems."""
         dt = self._model.opt.timestep * self.n_steps_per_action
         paths, yaw0 = [], []
-        for ep in splits[split]:
-            d = np.load(PROCESSED_DIR / f"{ep}.npz")
+        for f in files:
+            d = np.load(f)
             pose = resample_episode(d["t"], d["cube_xy_yaw"], dt)
             paths.append(ws_map.transform(pose[:, :2]))
             yaw0.append(float(pose[0, 2]))
-        return paths, yaw0, list(splits[split])
+        return paths, yaw0, [Path(f).stem for f in files]
 
     # ------------------------------------------------------------------
     # Gymnasium API

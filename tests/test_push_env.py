@@ -169,3 +169,21 @@ def test_split_reset_can_select_episode():
     _, info = env.reset(seed=0, options={"episode": 1})
     assert info["episode_id"] == env._episode_ids[1]
     env.close()
+
+
+@needs_data
+def test_episode_files_load_like_split_episodes():
+    """An explicit .npz is mapped, resampled and started exactly as the same episode in its split."""
+    from sim.push_env import PushTrackEnv
+    ref = PushTrackEnv(split="test", episodes=["ep_005"])
+    env = PushTrackEnv(episode_files=[pathlib.Path("data/processed/ep_005.npz")])
+    assert env.episode_ids == ["ep_005"]
+    _, info = env.reset(options={"episode_id": "ep_005"})
+    ref.reset(options={"episode_id": "ep_005"})
+    assert info["episode_id"] == "ep_005"
+    assert np.array_equal(env.reference_path, ref.reference_path)
+    assert env.cube_xy_yaw[1] == ref.cube_xy_yaw[1]
+    with pytest.raises(ValueError):
+        PushTrackEnv(split="test", episode_files=[pathlib.Path("data/processed/ep_005.npz")])
+    env.close()
+    ref.close()
