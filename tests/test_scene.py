@@ -91,3 +91,21 @@ def test_cube_slides_not_tips():
     assert tilt_rad < np.radians(5.0), (
         f"cube tilted {np.degrees(tilt_rad):.1f} deg — tipping detected"
     )
+
+
+def test_only_the_pusher_capsule_can_touch_the_cube():
+    """Arm links never meet the cube (a policy once swept it with the forearm from 17 cm away), but still meet the table."""
+    import mujoco
+    from sim.scene import load_push_scene
+    m, d = load_push_scene()
+    cube = next(g for g in range(m.ngeom) if m.geom_bodyid[g] == m.body("cube").id)
+
+    def collide(a, b):          # MuJoCo's contact filter on the contype/conaffinity bits
+        return bool(m.geom_contype[a] & m.geom_conaffinity[b]) or bool(m.geom_contype[b] & m.geom_conaffinity[a])
+
+    name = lambda g: mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_GEOM, g) or f"{mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_BODY, int(m.geom_bodyid[g]))}:{g}"
+    touches_cube = {name(g) for g in range(m.ngeom) if g != cube and collide(g, cube)}
+    assert touches_cube == {"table", "pusher_cap"}
+    # the other arm links are not disabled outright: they still meet the table
+    links = [g for g in range(m.ngeom) if m.geom_bodyid[g] > 0 and g != cube and name(g) != "pusher_cap" and m.geom_contype[g]]
+    assert links and all(collide(g, m.geom("table").id) for g in links)

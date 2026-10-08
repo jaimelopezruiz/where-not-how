@@ -6,3 +6,6 @@ __pycache__/
 .ik_baseline.npz
 docs/media/tests/
 data/models/
+
+# RL runs: TensorBoard logs, checkpoints, VecNormalize stats
+runs/

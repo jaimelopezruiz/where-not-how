@@ -3,17 +3,28 @@
 Observation (float32, shape (6 + 2*k_ref,)):
     ee_x, ee_y                          -- EE position in robot base frame (m)
     cube_x, cube_y, sin_yaw, cos_yaw    -- cube pose in world frame
-    ref_0_x, ref_0_y, ..., ref_{k-1}   -- next k lookahead points, in cube frame (m)
+    ref_0_x, ref_0_y, ..., ref_{k-1}   -- k reference points in the cube frame (m), spaced ref_spacing
+                                           apart in arc length from the current phase (point 0 is the
+                                           path point at the phase, the rest lie ahead; clamped at the end)
 
 Action (float32, shape (2,)):
     dx, dy  -- EE displacement per env step, clipped to ±max_delta (m)
 
 Reward:
-    progress_delta - 0.1 * lateral_dev - 0.01 * reach_dist + 10 * success
+    progress_delta - 0.1 * lateral_dev - reach_weight * reach_dist + 10 * success
 
-    progress_delta is arc-length fraction gained this step (monotonically
-    non-decreasing within an episode).  This matches the definition used by
-    T4's eval/metrics.py; episode success is also re-evaluated there.
+    reach_dist is the distance from the EE to the pre-contact point: `standoff` behind the cube centre
+    along the push direction d = unit(path point ref_spacing ahead of the phase - cube).  With the plan's
+    literal distance to the cube centre (precontact_reach=False, reach_weight 0.01) the pusher is pulled
+    straight at the cube and pushes it off the path whenever the robot starts beside or ahead of it (C6.3).
+
+    progress_delta is the arc-length fraction gained this step.  The phase (arc
+    coordinate on the reference) is monotone: each step the cube is projected on the
+    stretch of path from the phase to `progress_window` ahead, and the phase advances
+    to that projection only while the cube is within `r_adv` of it (C6.1; this is
+    eval/metrics.py's furthest projection, restricted to a local window so a path that
+    comes back near itself cannot be skipped to).  lateral_dev is the distance to
+    that stretch.
 
 Episode ends (terminated) on success: final_error < 2 cm and arc_progress >= 90 %.
 Episode is truncated at max_episode_steps.
@@ -43,7 +54,7 @@ from gymnasium import spaces
 from capture.common import DEFAULT_PROPS, REPO_ROOT, load_props
 from control.ee_controller import EEController
 from control.workspace import WORKSPACE_MAP_PATH, generate_synthetic_paths, load_workspace_map
-from sim.scene import ARM_JOINTS, build_push_scene_xml
+from sim.scene import ARM_JOINTS, PUSHER_CAPSULE_RADIUS, build_push_scene_xml
 
 SPLITS_PATH = REPO_ROOT / "data" / "splits.json"
 PROCESSED_DIR = REPO_ROOT / "data" / "processed"
@@ -73,6 +84,12 @@ class PushTrackEnv(gym.Env):
         self,
         render_mode=None,
         k_ref: int = 5,
+        ref_spacing: float = 0.025,
+        r_adv: float = 0.03,
+        progress_window: float = 0.10,
+        precontact_reach: bool = True,
+        reach_weight: float = 0.1,
+        episodes=None,
         max_delta: float = 0.02,
         n_steps_per_action: int = 25,   # 0.002 s × 25 = 0.05 s/step = 20 Hz
         max_episode_steps: int = 600,   # max train 20.2 s × 20 Hz + 50% slack
@@ -82,7 +99,13 @@ class PushTrackEnv(gym.Env):
         workspace_map_path=WORKSPACE_MAP_PATH,
     ):
         """
-        :param k_ref:               Lookahead reference points per observation.
+        :param k_ref:               Reference points per observation.
+        :param ref_spacing:         Arc length between observed reference points (m).
+        :param r_adv:               The phase advances only while the cube is within this of the path (m).
+        :param progress_window:     How far ahead of the phase the cube is searched on the path (m).
+        :param precontact_reach:    Reach shaping targets the point behind the cube, not its centre.
+        :param reach_weight:        Weight of the reach term (m^-1 per step).
+        :param episodes:            Split envs: restrict to these episode ids (e.g. to overfit one).
         :param max_delta:           Max EE displacement per action (m).
         :param n_steps_per_action:  MuJoCo steps per env step.
         :param max_episode_steps:   Truncation horizon.
@@ -98,6 +121,11 @@ class PushTrackEnv(gym.Env):
 
         self.render_mode = render_mode
         self.k_ref = k_ref
+        self.ref_spacing = float(ref_spacing)
+        self.r_adv = float(r_adv)
+        self.progress_window = float(progress_window)
+        self.precontact_reach = bool(precontact_reach)
+        self.reach_weight = float(reach_weight)
         self.max_delta = float(max_delta)
         self.n_steps_per_action = int(n_steps_per_action)
         self.max_episode_steps = int(max_episode_steps)
@@ -105,6 +133,8 @@ class PushTrackEnv(gym.Env):
         # Scene
         props = load_props(props_path, require=("cube_side", "cube_height", "cube_mass"))
         self._cube_height = props["cube_height"]
+        # EE standoff behind the cube centre: half side + capsule radius + 5 mm
+        self._standoff = props["cube_side"] / 2 + PUSHER_CAPSULE_RADIUS + 0.005
         self._model = mujoco.MjModel.from_xml_string(build_push_scene_xml(props))
         self._data  = mujoco.MjData(self._model)
 
@@ -135,6 +165,11 @@ class PushTrackEnv(gym.Env):
         if split is not None:
             self._paths, self._yaw0, self._episode_ids = self._load_split(
                 split, load_workspace_map(workspace_map_path))
+            if episodes is not None:
+                keep = [self._episode_ids.index(e) for e in episodes]   # ValueError if not in the split
+                self._paths = [self._paths[i] for i in keep]
+                self._yaw0 = [self._yaw0[i] for i in keep]
+                self._episode_ids = [self._episode_ids[i] for i in keep]
         elif paths is None:
             line, arc, s_curve = generate_synthetic_paths()
             self._paths = [line, arc, s_curve]
@@ -162,6 +197,8 @@ class PushTrackEnv(gym.Env):
         self._arc_lengths: np.ndarray = np.array([0.0])
         self._total_arc_len: float = 0.0
         self._max_arc_progress: float = 0.0   # fraction in [0, 1], monotone
+        self._phase: float = 0.0              # arc coordinate (m), monotone
+        self._lateral: float = 0.0
         self._step_count: int = 0
         self._renderer = None
 
@@ -255,6 +292,8 @@ class PushTrackEnv(gym.Env):
         self._arc_lengths = np.concatenate([[0.0], np.cumsum(np.linalg.norm(diffs, axis=1))])
         self._total_arc_len = float(self._arc_lengths[-1])
         self._max_arc_progress = 0.0
+        self._phase = 0.0
+        self._lateral = 0.0
         self._step_count = 0
 
         # Reset MuJoCo state
@@ -344,58 +383,68 @@ class PushTrackEnv(gym.Env):
                                 1.0 - 2.0 * (qy ** 2 + qz ** 2)))
         return pos[:2].copy(), yaw
 
-    def _arc_progress_frac(self, cube_xy):
-        """Arc-length fraction reached by the cube, monotonically non-decreasing.
+    def _point_at(self, arc):
+        """Reference point(s) at arc coordinate(s) (m), clamped to the path."""
+        arc = np.clip(arc, 0.0, self._total_arc_len)
+        return np.column_stack([np.interp(arc, self._arc_lengths, self._path[:, 0]),
+                                np.interp(arc, self._arc_lengths, self._path[:, 1])])
 
-        Finds the closest path point to cube_xy, reads its cumulative arc length,
-        and takes the max of the current max and the new value.  This definition
-        matches T4's eval/metrics.py so training and evaluation use the same signal.
+    def _advance_phase(self, cube_xy):
+        """Phase tracker (C6.1). Returns the arc-length fraction gained; sets self._lateral.
+
+        Projects the cube on the path from the phase to `progress_window` ahead. The phase moves to the
+        projection if the cube is within r_adv of it, never backwards.
         """
-        dists = np.linalg.norm(self._path - cube_xy, axis=1)
-        idx = int(np.argmin(dists))
-        frac = (self._arc_lengths[idx] / self._total_arc_len
-                if self._total_arc_len > 0 else 0.0)
-        return max(self._max_arc_progress, frac)
+        from eval.metrics import _polyline_project
+        s0 = self._phase
+        end = min(s0 + self.progress_window, self._total_arc_len)
+        if end - s0 < 1e-9:
+            self._lateral = float(np.linalg.norm(cube_xy - self._path[-1]))
+            return 0.0
+        inner = self._arc_lengths[(self._arc_lengths > s0) & (self._arc_lengths < end)]
+        arcs = np.concatenate([[s0], inner, [end]])
+        arc, dist, _ = _polyline_project(self._point_at(arcs), np.asarray(cube_xy, float)[None])
+        self._lateral = float(dist[0])
+        if self._lateral <= self.r_adv:
+            self._phase = min(s0 + float(arc[0]), self._total_arc_len)
+        gain = (self._phase - s0) / self._total_arc_len if self._total_arc_len > 0 else 0.0
+        self._max_arc_progress = min(self._max_arc_progress + gain, 1.0)
+        return gain
 
     def _get_obs(self):
         ee_xy = self._ee_xy()
         cube_xy, yaw = self._cube_xy_yaw()
         sin_y, cos_y = float(np.sin(yaw)), float(np.cos(yaw))
 
-        # k lookahead points starting at the path index nearest to current progress
-        k = self.k_ref
-        arc_pos = self._max_arc_progress * self._total_arc_len
-        idx0 = int(np.searchsorted(self._arc_lengths, arc_pos))
-        idx0 = min(idx0, len(self._path) - 1)
-        end = min(idx0 + k, len(self._path))
-        pts = self._path[idx0:end]
-        if len(pts) < k:
-            pts = np.vstack([pts, np.tile(self._path[-1], (k - len(pts), 1))])
-
+        # k reference points at fixed arc-length spacing from the phase (clamped at the path end), in the cube frame
+        pts = self._point_at(self._phase + self.ref_spacing * np.arange(self.k_ref))
         R = np.array([[cos_y, sin_y], [-sin_y, cos_y]])
         pts_cube = (pts - cube_xy) @ R.T
 
         obs = np.concatenate([ee_xy, cube_xy, [sin_y, cos_y], pts_cube.ravel()])
         return obs.astype(np.float32)
 
+    def _reach_target(self, cube_xy):
+        """Where the EE should be heading: behind the cube along the push direction (or the cube itself)."""
+        if not self.precontact_reach:
+            return cube_xy
+        ahead = self._point_at(np.array([self._phase + self.ref_spacing]))[0] - cube_xy
+        n = np.linalg.norm(ahead)
+        return cube_xy if n < 1e-6 else cube_xy - self._standoff * ahead / n
+
     def _compute_reward(self):
         cube_xy, _ = self._cube_xy_yaw()
-        new_prog = self._arc_progress_frac(cube_xy)
-        progress_delta = new_prog - self._max_arc_progress
-        self._max_arc_progress = new_prog
-
-        # Lateral deviation: distance to closest path point
-        dists = np.linalg.norm(self._path - cube_xy, axis=1)
-        pt = self._path[int(np.argmin(dists))]
-        lateral   = float(np.linalg.norm(cube_xy - pt))
+        progress_delta = self._advance_phase(cube_xy)
+        new_prog = self._max_arc_progress
+        lateral   = self._lateral
         ee_xy     = self._ee_xy()
-        reach     = float(np.linalg.norm(ee_xy - cube_xy))
+        reach     = float(np.linalg.norm(ee_xy - self._reach_target(cube_xy)))
         final_err = float(np.linalg.norm(cube_xy - self._path[-1]))
         # Arc-length success: same threshold as T4's eval/metrics.py
         success   = (final_err < 0.02) and (new_prog >= 0.90)
 
-        reward = progress_delta - 0.1 * lateral - 0.01 * reach + (10.0 if success else 0.0)
-        info = {"arc_progress": new_prog, "lateral_dev_m": lateral,
+        reward = progress_delta - 0.1 * lateral - self.reach_weight * reach + (10.0 if success else 0.0)
+        info = {"arc_progress": new_prog, "lateral_dev_m": lateral, "reach_dist_m": reach,
                 "final_err_m": final_err, "success": success}
         return float(reward), info
 
