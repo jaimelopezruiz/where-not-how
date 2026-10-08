@@ -58,11 +58,12 @@ class ScriptedPusher:
     stop_tol : the cube is done when within this of the path end, m
     lat_tol, lat_exit : lateral offset from the push line to start / abandon a push, m
     progress_window : how far ahead of the current progress the cube is searched on the path, m
+    stuck_cmd : commands longer than this that move the EE by under a quarter of their length halve the step size, m
     """
 
-    def __init__(self, max_delta=0.02, lookahead=0.03, cube_side=None, pusher_radius=0.006,
-                 margin=0.005, push_speed=0.01, stop_tol=0.005, lat_tol=0.012, lat_exit=0.025,
-                 progress_window=0.10, k_lat=0.5):
+    def __init__(self, max_delta=0.02, lookahead=0.025, cube_side=None, pusher_radius=0.006,
+                 margin=0.005, push_speed=0.0033, stop_tol=0.005, lat_tol=0.012, lat_exit=0.025,
+                 progress_window=0.10, k_lat=0.5, stuck_cmd=0.005):
         if cube_side is None:
             from capture.common import load_props
             cube_side = load_props(require=("cube_side",))["cube_side"]
@@ -72,7 +73,7 @@ class ScriptedPusher:
         self.radius, self.margin = pusher_radius, margin
         self.push_speed, self.stop_tol = push_speed, stop_tol
         self.lat_tol, self.lat_exit = lat_tol, lat_exit
-        self.window, self.k_lat = progress_window, k_lat
+        self.window, self.k_lat, self.stuck_cmd = progress_window, k_lat, stuck_cmd
         self.clear = self.half_diag + pusher_radius + margin   # circle radius around the cube centre
         self.ref = None
         self.reset([[0.0, 0.0], [1.0, 0.0]])
@@ -93,6 +94,9 @@ class ScriptedPusher:
         self.d = None
         self.lookahead_pt = ref[0].copy()
         self._orbit = 1.0            # side of the circle taken when the way round is ambiguous
+        self._last_ee = None         # previous EE position and command, to notice a step the arm did not take
+        self._last_cmd = np.zeros(2)
+        self._scale = 1.0            # step size factor, reduced while the arm fails to follow (IK rejects long steps)
 
     def point_at(self, s):
         s = float(np.clip(s, 0.0, self.total))
@@ -115,11 +119,15 @@ class ScriptedPusher:
         self.progress = min(self.progress + float(arc[0]), self.total)
 
     # -- control --------------------------------------------------------------------------------
+    def __call__(self, obs):
+        return self.act(obs)
+
     def act(self, obs):
         obs = np.asarray(obs, float)
         ee, cube = obs[0:2], obs[2:4]
         yaw = np.arctan2(obs[4], obs[5])
         self._advance(cube)
+        self._track_following(ee)
         end = self.ref[-1]
         if self.total - self.progress <= self.lookahead and np.hypot(*(cube - end)) < self.stop_tol:
             self.mode = DONE
@@ -144,7 +152,19 @@ class ScriptedPusher:
         self.mode = PUSH if push else APPROACH
         vec = self._push(d, nrm, lat, gap) if push else self._approach(rel, d)
         norm = np.hypot(*vec)
-        return vec if norm <= self.max_delta else vec * (self.max_delta / norm)
+        vec = vec if norm <= self.max_delta else vec * (self.max_delta / norm)
+        self._last_cmd = vec = vec * self._scale
+        return vec
+
+    def _track_following(self, ee):
+        """Shorten steps while the arm does not execute them (the IK refuses some long steps near joint limits)."""
+        if self._last_ee is not None:
+            cmd, moved = np.hypot(*self._last_cmd), np.hypot(*(ee - self._last_ee))
+            if cmd > self.stuck_cmd and moved < 0.25 * cmd:
+                self._scale = max(0.25, self._scale * 0.5)
+            elif moved >= 0.5 * cmd:
+                self._scale = min(1.0, self._scale * 1.25)
+        self._last_ee = ee.copy()
 
     def _push(self, d, nrm, lat, gap):
         along = np.clip(gap - 0.02, self.push_speed, self.max_delta)

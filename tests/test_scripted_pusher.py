@@ -326,3 +326,30 @@ def test_closed_loop_curved_path(yaw):
     assert m["success"], m
     assert m["mean_deviation_cm"] < 1.5, m
     assert bad == 0
+
+
+# -- steps the arm does not follow ------------------------------------------------------------------
+
+def test_step_size_shrinks_while_the_arm_does_not_follow_and_recovers():
+    p = _pusher()
+    p.reset(_line())
+    cube = np.array([0.0, 0.0])
+    ee = np.array([0.3, 0.0])
+    sizes = []
+    for _ in range(4):                                          # the EE never moves: IK keeps rejecting the step
+        sizes.append(np.hypot(*p.act(_obs(ee, cube))))
+    assert sizes[0] == pytest.approx(p.max_delta)
+    assert sizes == pytest.approx(np.array([1.0, 0.5, 0.25, 0.25]) * p.max_delta)   # halves, then the floor
+    for _ in range(12):                                         # now it follows every command
+        a = p.act(_obs(ee, cube))
+        ee = ee + a
+    assert p._scale == pytest.approx(1.0)
+
+
+def test_reset_restores_full_step_size():
+    p = _pusher()
+    p.reset(_line())
+    for _ in range(4):
+        p.act(_obs([0.3, 0.0], [0.0, 0.0]))
+    p.reset(_line())
+    assert np.hypot(*p.act(_obs([0.3, 0.0], [0.0, 0.0]))) == pytest.approx(p.max_delta)
