@@ -186,3 +186,53 @@ def test_reach_term_vanishes_at_the_precontact_point(env, monkeypatch):
     monkeypatch.setattr(env, "_ee_xy", lambda: env._reach_target(cube))
     reward, info = env._compute_reward()
     assert info["reach_dist_m"] == pytest.approx(0.0, abs=1e-9)
+
+
+# --- C6.7: displacement-weighted deviation penalty -------------------------------------------------
+
+@pytest.fixture
+def dev_env():
+    e = PushTrackEnv(paths=[_line()], max_episode_steps=50, deviation_weight=5.0)
+    e.reset(seed=0)
+    yield e
+    e.close()
+
+
+def test_deviation_weight_none_keeps_the_original_reward(env):
+    """Default env: every reward is progress - 0.1 * lateral - reach_weight * reach + bonus, from the step info."""
+    assert env.deviation_weight is None
+    rng = np.random.default_rng(0)
+    prev = 0.0
+    for _ in range(6):
+        _, reward, _, _, info = env.step(rng.uniform(-0.02, 0.02, 2))
+        expected = ((info["arc_progress"] - prev) - 0.1 * info["lateral_dev_m"]
+                    - env.reach_weight * info["reach_dist_m"] + (10.0 if info["success"] else 0.0))
+        assert reward == pytest.approx(expected, abs=1e-9)
+        assert info["dev_penalty"] == pytest.approx(0.1 * info["lateral_dev_m"], abs=1e-12)
+        prev = info["arc_progress"]
+
+
+def test_deviation_penalty_sums_to_weight_times_mean_deviation_cm(dev_env):
+    """A box pushed along the whole reference at a constant 1 cm offset: total penalty ~ weight x 1.0."""
+    env = dev_env
+    total = env._total_arc_len
+    _put_cube(env, _at(env, 0.0, lateral=0.01))
+    env._compute_reward()                                   # sync the previous position; not counted
+    penalty = 0.0
+    for arc in np.arange(0.01, total + 1e-9, 0.01):
+        _put_cube(env, _at(env, arc, lateral=0.01))
+        _, info = env._compute_reward()
+        assert info["lateral_dev_m"] == pytest.approx(0.01, abs=1e-6)
+        penalty += info["dev_penalty"]
+    assert penalty == pytest.approx(env.deviation_weight * 1.0, rel=0.10)
+
+
+def test_stationary_offset_box_gets_no_deviation_penalty(dev_env):
+    env = dev_env
+    _put_cube(env, _at(env, 0.05, lateral=0.02))
+    env._compute_reward()                                   # the jump from the start is movement
+    for _ in range(3):
+        reward, info = env._compute_reward()
+        assert info["lateral_dev_m"] == pytest.approx(0.02, abs=1e-9)
+        assert info["dev_penalty"] == 0.0
+        assert reward == pytest.approx(-_expected_reach_penalty(env), abs=1e-9)

@@ -92,6 +92,7 @@ class PushTrackEnv(gym.Env):
         progress_window: float = 0.10,
         precontact_reach: bool = True,
         reach_weight: float = 0.1,
+        deviation_weight=None,
         episodes=None,
         max_delta: float = 0.02,
         n_steps_per_action: int = 25,   # 0.002 s × 25 = 0.05 s/step = 20 Hz
@@ -109,6 +110,10 @@ class PushTrackEnv(gym.Env):
         :param progress_window:     How far ahead of the phase the cube is searched on the path (m).
         :param precontact_reach:    Reach shaping targets the point behind the cube, not its centre.
         :param reach_weight:        Weight of the reach term (m^-1 per step).
+        :param deviation_weight:    None: the lateral term is -0.1 * lateral per step. A number replaces it with
+                                    -deviation_weight * (lateral / 1 cm) * (cube displacement this step / path
+                                    length), so an episode sums to about deviation_weight x mean deviation (cm),
+                                    the displacement weighting of eval/metrics.py (C6.7).
         :param episodes:            Split envs: restrict to these episode ids (e.g. to overfit one).
         :param max_delta:           Max EE displacement per action (m).
         :param n_steps_per_action:  MuJoCo steps per env step.
@@ -132,6 +137,7 @@ class PushTrackEnv(gym.Env):
         self.progress_window = float(progress_window)
         self.precontact_reach = bool(precontact_reach)
         self.reach_weight = float(reach_weight)
+        self.deviation_weight = None if deviation_weight is None else float(deviation_weight)
         self.max_delta = float(max_delta)
         self.n_steps_per_action = int(n_steps_per_action)
         self.max_episode_steps = int(max_episode_steps)
@@ -208,6 +214,7 @@ class PushTrackEnv(gym.Env):
         self._max_arc_progress: float = 0.0   # fraction in [0, 1], monotone
         self._phase: float = 0.0              # arc coordinate (m), monotone
         self._lateral: float = 0.0
+        self._prev_cube_xy: np.ndarray = np.zeros(2)
         self._step_count: int = 0
         self._renderer = None
 
@@ -325,6 +332,7 @@ class PushTrackEnv(gym.Env):
                 self._data.ctrl[aid] = 0.0
 
         mujoco.mj_forward(self._model, self._data)
+        self._prev_cube_xy = self._cube_xy_yaw()[0]
         self._ctrl.reset(q0=np.zeros(len(ARM_JOINTS)),
                          z_push=self._cube_height / 2)
 
@@ -456,9 +464,16 @@ class PushTrackEnv(gym.Env):
         # Arc-length success: same threshold as T4's eval/metrics.py
         success   = (final_err < 0.02) and (new_prog >= 0.90)
 
-        reward = progress_delta - 0.1 * lateral - self.reach_weight * reach + (10.0 if success else 0.0)
+        displacement = float(np.linalg.norm(cube_xy - self._prev_cube_xy))
+        self._prev_cube_xy = cube_xy
+        if self.deviation_weight is None:
+            dev_penalty = 0.1 * lateral
+        else:
+            dev_penalty = self.deviation_weight * (lateral / 0.01) * displacement / self._total_arc_len
+
+        reward = progress_delta - dev_penalty - self.reach_weight * reach + (10.0 if success else 0.0)
         info = {"arc_progress": new_prog, "lateral_dev_m": lateral, "reach_dist_m": reach,
-                "final_err_m": final_err, "success": success}
+                "final_err_m": final_err, "success": success, "dev_penalty": dev_penalty}
         return float(reward), info
 
 

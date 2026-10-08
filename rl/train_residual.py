@@ -26,6 +26,8 @@ def main(argv=None):
     ap.add_argument("--eval-every", type=int, default=100_000)
     ap.add_argument("--checkpoint-every", type=int, default=500_000)
     ap.add_argument("--residual-scale", type=float, default=RESIDUAL_SCALE)
+    ap.add_argument("--deviation-weight", type=float, default=None,
+                    help="C6.7: displacement-weighted deviation penalty replacing -0.1 * lateral")
     a = vars(ap.parse_args(argv))
     if a["split"] != "train":
         raise SystemExit("C6.5 trains and monitors on the train split only")
