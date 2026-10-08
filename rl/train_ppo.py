@@ -46,10 +46,12 @@ class PolicyActions(gym.Wrapper):
         return obs, reward, terminated, truncated, info
 
 
-def make_env(split, episodes, max_episode_steps, k_ref, seed, residual_scale=None):
-    """Training env; residual_scale not None wraps it as a residual on the scripted pusher (C6.5)."""
+def make_env(split, episodes, max_episode_steps, k_ref, seed, residual_scale=None, deviation_weight=None):
+    """Training env; residual_scale not None wraps it as a residual on the scripted pusher (C6.5);
+    deviation_weight not None swaps in the displacement-weighted deviation penalty (C6.7)."""
     from sim.push_env import PushTrackEnv
-    env = PushTrackEnv(split=split, episodes=episodes, max_episode_steps=max_episode_steps, k_ref=k_ref)
+    env = PushTrackEnv(split=split, episodes=episodes, max_episode_steps=max_episode_steps, k_ref=k_ref,
+                       deviation_weight=deviation_weight)
     if residual_scale is None:
         env = PolicyActions(env)
     else:
@@ -124,7 +126,7 @@ class EvalCurve(BaseCallback):
 def train(name, split="train", episodes=None, eval_episodes=None, n_envs=8, seed=0, total_steps=50_000_000,
           time_limit_min=None, max_episode_steps=600, k_ref=5, eval_every=50_000, checkpoint_every=250_000,
           n_steps=512, batch_size=256, lr=3e-4, ent_coef=0.0, gamma=0.99, log_std_init=-1.0, resume=False,
-          torch_threads=2, residual_scale=None):
+          torch_threads=2, residual_scale=None, deviation_weight=None):
     os.environ.setdefault("OMP_NUM_THREADS", "1")      # env workers inherit this: one BLAS thread each
     torch.set_num_threads(torch_threads)
     run = RUNS / name
@@ -133,7 +135,7 @@ def train(name, split="train", episodes=None, eval_episodes=None, n_envs=8, seed
     cfg.pop("run")
     (run / "config.json").write_text(json.dumps(cfg, indent=2, default=str))
 
-    fns = [partial(make_env, split, episodes, max_episode_steps, k_ref, seed + i, residual_scale) for i in range(n_envs)]
+    fns = [partial(make_env, split, episodes, max_episode_steps, k_ref, seed + i, residual_scale, deviation_weight) for i in range(n_envs)]
     venv = SubprocVecEnv(fns, start_method="spawn")
     ckpt = sorted(run.glob("rl_model_*_steps.zip"), key=lambda p: int(p.stem.split("_")[2]))
     resuming = bool(resume and ckpt)
