@@ -1,11 +1,11 @@
-scripted on train (27 episodes, 20 s)
+scripted on train (27 episodes, 10 s)
 params: {"max_delta": 0.02, "lookahead": 0.025, "pusher_radius": 0.006, "margin": 0.005, "push_speed": 0.0033, "stop_tol": 0.005, "lat_tol": 0.012, "lat_exit": 0.025, "progress_window": 0.1, "k_lat": 0.5}
 
 Category        N  Success%  Mean dev (cm)  Final err (cm)  Progress  Time (s)
 ------------------------------------------------------------------------------
-curve           9     100.0           0.54            0.43     0.987      5.74
-multi           4     100.0           0.47            0.34     0.982      6.04
-straight        8     100.0           0.57            0.38     0.981      4.39
-turn            6     100.0           0.50            0.34     0.990      7.26
+curve           9     100.0           0.52            0.41     0.986      5.77
+multi           4     100.0           0.46            0.33     0.982      6.03
+straight        8     100.0           0.56            0.39     0.981      4.32
+turn            6     100.0           0.56            0.29     0.991      7.63
 
-overall: success 100.0%  mean deviation 0.53 cm  final error 0.38 cm  progress 0.985
+overall: success 100.0%  mean deviation 0.53 cm  final error 0.37 cm  progress 0.985

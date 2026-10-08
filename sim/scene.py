@@ -151,7 +151,7 @@ def build_push_scene_xml(props, robot_base_pos=(0.0, 0.0, 0.0)):
 
     # Pusher capsule + tip site on the gripper body
     # gripperframe site in the gripper body: pos="-0.0079 -0.000218 -0.0981274"
-    # The capsule is placed at that site; contype/conaffinity explicitly set to 1
+    # The capsule is placed at that site; contype/conaffinity set explicitly (3: table and cube bits)
     # because the so101_new_calib default class sets contype=0 for all geoms.
     gripper = next((b for b in root.iter("body") if b.get("name") == "gripper"), None)
     # The gripper and jaw collision meshes are up to ~3 cm wide and would hit the cube before the
@@ -161,11 +161,16 @@ def build_push_scene_xml(props, robot_base_pos=(0.0, 0.0, 0.0)):
             for g in b.findall("geom"):
                 g.set("contype", "0")
                 g.set("conaffinity", "0")
+    # Contact bits: the cube (2) is touched only by the table and the capsule (both 3). The other arm links keep
+    # the default bit 1, so they still meet the table and each other but never the cube: with the EE held at
+    # push height and far from the cube, a trained policy used to sweep the cube with the forearm from 17 cm away.
+    tbl.set("contype", "3"); tbl.set("conaffinity", "3")
+    cg.set("contype", "2"); cg.set("conaffinity", "2")
     if gripper is not None:
         pcap = ET.SubElement(gripper, "geom")
         for k, v in [("name", "pusher_cap"), ("type", "capsule"), ("size", "0.006 0.008"),
                      ("pos", "-0.0079 -0.000218 -0.0981274"),
-                     ("contype", "1"), ("conaffinity", "1"),
+                     ("contype", "3"), ("conaffinity", "3"),
                      ("friction", "0.8 0.005 0.0001"), ("rgba", "0.2 0.4 0.8 1")]:
             pcap.set(k, v)
         ptip = ET.SubElement(gripper, "site")

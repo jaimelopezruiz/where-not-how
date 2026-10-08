@@ -1,0 +1,2 @@
+id,category,method,progress,mean_deviation_cm,final_error_cm,success,completion_time
+ep_010,straight,ppo,0.9981231080615994,1.6732284896227665,0.3779309453172233,True,1.4000000000000001
