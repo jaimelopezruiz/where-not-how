@@ -395,14 +395,64 @@ def test_finger_props_are_never_defaulted(tmp_path):
 
 def test_onto_grid_bridges_short_gaps_only():
     from extract import fingertip as F
-    t = np.arange(60) / 30
+    t = np.arange(90) / 30
     xy = np.column_stack([t, 2 * t])
-    xy[10:14] = np.nan                       # 4 frames: bridged
-    xy[30:40] = np.nan                       # 10 frames: left
-    grid = np.arange(0, 1.9, 0.05)
+    xy[10:20] = np.nan                       # 11 frame intervals = 0.37 s between detections: bridged
+    xy[40:58] = np.nan                       # 19 frame intervals = 0.63 s: left
+    grid = np.arange(0, 2.9, 0.05)
     out = F.onto_grid(t, xy, grid)
-    assert np.isfinite(out[(grid > 0.3) & (grid < 0.4)]).all() and np.allclose(out[:, 1][np.isfinite(out[:, 1])], 2 * grid[np.isfinite(out[:, 1])])
-    assert np.isnan(out[(grid > 1.05) & (grid < 1.25)]).all()
+    assert np.isfinite(out[(grid > 0.33) & (grid < 0.62)]).all()
+    assert np.allclose(out[:, 1][np.isfinite(out[:, 1])], 2 * grid[np.isfinite(out[:, 1])])
+    assert np.isnan(out[(grid > 1.35) & (grid < 1.85)]).all()
+
+
+def test_bridge_gaps_counts_time_between_detections_and_never_extrapolates():
+    from extract import fingertip as F
+    t = np.arange(40) * 0.1
+    xy = np.column_stack([t, -t])
+    xy[:3] = np.nan                          # leading: stays
+    xy[10:14] = np.nan                       # 0.5 s between detections: bridged (limit is inclusive)
+    xy[20:26] = np.nan                       # 0.7 s: stays
+    xy[-2:] = np.nan                         # trailing: stays
+    out, ok = F.bridge_gaps(t, xy)
+    assert ok[10:14].all() and np.allclose(out[10:14], np.column_stack([t, -t])[10:14])
+    assert not ok[:3].any() and not ok[20:26].any() and not ok[-2:].any()
+    assert np.isnan(out[20:26]).all()
+    assert F.gap_runs(np.isfinite(xy[:, 0])) == [(10, 14), (20, 26)]
+
+
+def test_crop_window_follows_the_box_and_stays_inside_the_frame():
+    from extract import fingertip as F
+    assert F.crop_window((640, 360), 400, 1280, 720) == (440, 160)
+    assert F.crop_window((50, 700), 400, 1280, 720) == (0, 320)
+    assert F.crop_window((1270, 10), 400, 1280, 720) == (880, 0)
+    corners = np.full((5, 4, 2), np.nan)
+    corners[1] = [[10, 10], [30, 10], [30, 30], [10, 30]]
+    corners[4] = [[110, 10], [130, 10], [130, 30], [110, 30]]
+    c = F.crop_centres(corners)
+    assert np.allclose(c[0], [20, 20]) and np.allclose(c[1], [20, 20]) and np.allclose(c[3], [120, 20])
+
+
+def test_window_gaps_reports_coverage_and_what_stays_after_bridging():
+    from extract.finger_coverage import window_gaps
+    t = np.arange(100) * 0.1                                 # window 2.0 .. 8.0 s
+    valid = np.ones(100, bool)
+    valid[:15] = False                                       # detections start at 1.5 s: before the window
+    valid[40:44] = False                                     # 0.5 s between detections: bridged
+    g = window_gaps(t, valid, 2.0, 8.0)
+    assert g["usable"] and g["remaining_longest_gap_s"] == 0 and g["raw_longest_gap_s"] == pytest.approx(0.5)
+    assert g["raw_cov"] == pytest.approx(1 - 4 / 61) and g["filled_cov"] == 1.0
+    valid[60:70] = False                                     # 1.1 s between detections: stays
+    g = window_gaps(t, valid, 2.0, 8.0)
+    assert not g["usable"] and g["remaining_longest_gap_s"] == pytest.approx(1.1)
+    late = np.ones(100, bool)
+    late[:23] = False                                        # first detection 0.3 s after the window start: tolerated
+    assert window_gaps(t, late, 2.0, 8.0)["usable"]
+    late[:28] = False                                        # 0.8 s: not
+    g = window_gaps(t, late, 2.0, 8.0)
+    assert not g["usable"] and g["remaining_longest_gap_s"] == pytest.approx(0.8)
+    nothing = window_gaps(t, np.zeros(100, bool), 2.0, 8.0)
+    assert not nothing["usable"] and nothing["raw_cov"] == 0 and nothing["remaining_longest_gap_s"] == pytest.approx(6.0)
 
 
 # ---------------------------------------------------------------- split
