@@ -41,7 +41,7 @@ Statuses: `todo` / `in progress` / `done` / `blocked` / `cut`.
 |-----|------------------------------------|-----|--------|-----|--------|
 | T0  | Repo + environment                 | P0  | 1 h    | Wed | done   |
 | T1  | Data capture                       | P0  | 2–3 h  | Wed | done   |
-| T2  | Extraction pipeline                | P0  | 3–4 h  | Wed | todo   |
+| T2  | Extraction pipeline                | P0  | 3–4 h  | Wed | done   |
 | T3  | Simulation env                     | P0  | 3–4 h  | Wed/Thu | in progress |
 | T4  | Evaluation harness                 | P0  | 2 h    | Thu | todo   |
 | T5  | Scripted pusher                    | P0  | 3 h    | Thu | todo   |
@@ -166,7 +166,7 @@ Statuses: `todo` / `in progress` / `done` / `blocked` / `cut`.
 
 ## T2: Extraction pipeline (P0)
 
-- [ ] **C2.1 Table frame.** Detect board each frame, `solvePnP` → camera pose in table frame.
+- [x] **C2.1 Table frame.** Detect board each frame, `solvePnP` → camera pose in table frame.
   Per-frame pose absorbs small tripod shake.
   The board's orientation estimate is the weak part (3.5 deg tilt found in the C1.2 live check), so: fit a plane
   to all box-top positions (the box always lies flat), take the table normal from that fit, and use the board only
@@ -176,22 +176,81 @@ Statuses: `todo` / `in progress` / `done` / `blocked` / `cut`.
   visible the board depth wanders 10-25 mm with no real motion. Hold or interpolate the 4-marker pose across
   occlusions (the arm often hides the board for 3-7 s). Per episode, report the board's pixel drift from first to
   last frame as a QA figure (0.0-0.3 px for a static camera).
-- [ ] **C2.2 Cube pose.** `solvePnP` on the cube marker, transform to table frame, drop to (x, y, yaw).
+  **Done 2026-10-07** (`extract/detect.py`, `extract/table.py`). Board pose per frame from frames with 4 markers and
+  board reprojection RMS <= 1.2 px (clean frames sit at 0.72-0.78 px; partly covered markers give 1.4-5.6 px), then
+  slerp + linear interpolation between them, nearest held at the ends. Table frame: origin = the board origin's foot
+  on the fitted plane, x = board x projected onto it, z up, y = z cross x (the board's y flipped), yaw
+  counter-clockwise. A straight push cannot fix the plane's tilt across the line (minor-axis spread 1-8 mm), so the
+  fit is ridge-pulled to a prior slope, the median of the 23 episodes whose points spread >= 25 mm in every
+  direction (b = -0.082, c = 0.000, tilt 4.7 deg). Weight on the prior: 0.84-1.0 in 14 episodes (the 10 straight
+  pushes, and ep_036, 057, 059, 066 whose paths are near-collinear too), 0.02-0.28 in the other 24. Plane residual
+  (rms): median 1.9 mm, max 4.9 mm, not the < 1 mm of the C1.2 live check (that was four stationary positions; here
+  every frame counts, and the marker's line-of-sight position scatters). Plane tilt: 2.4-6.2 deg in the 16 episodes
+  spread >= 35 mm; 1.3-11.7 over all. ep_014 (11.7 deg) is the outlier: its data dominated the fit at prior weight
+  0.25, so its xy may carry up to ~2% scale error (1 - cos 11.7 deg against 0.3% at the typical tilt). Board-pixel
+  drift first to last clean frame: 0.01-0.51 px in 32 of 38 episodes; ep_021 5.7, ep_034 4.6, ep_030 3.0, ep_055 2.3,
+  ep_027 1.2, ep_049 0.9 (camera moved, absorbed by the per-frame pose). Board pose measured in 100% of frames in 30
+  episodes, 35-81% in the other 8 (longest hold 9.9 s, ep_057). While held, partly visible board markers sit 2.5-3.9
+  px (p95) from the held track in those 8 (sustained 0.5-1.3 px with brief spikes at the edges of an occlusion): up
+  to ~1.5 mm of table position if the camera really moved, not separable from corner bias on half-covered markers.
+- [x] **C2.2 Cube pose.** `solvePnP` on the cube marker, transform to table frame, drop to (x, y, yaw).
   Do not push the cube marker through a table-plane homography: it sits at cube height and parallax biases position.
   **Test (C2.1 and C2.2):** synthetic render with a known cube path (reuse `tests/synth.py`); the extracted
   (x, y, yaw) in the z-up table frame matches. Catches OpenCV's y-down/z-in frame leaking through, and a flipped yaw sign.
+  **Done 2026-10-07.** Marker pose from `solvePnP` (IPPE_SQUARE + LM, as in `live_check`) in the per-frame board frame,
+  then into the table frame. Cube detected in 100% of frames of all 38 episodes, no frame dropped by any gate.
+  **Tests** (`tests/test_extract.py`): analytic scene with a table tilted 4.5, -7 and 5 deg (about board y and x)
+  and a 0 deg control, camera drifting and shaking, 2-marker poses 20 mm off during a 50-frame occlusion: x, y, yaw
+  exact to 1e-6 including the held frames. Rendered board + cube through the detector: x, y within 5 mm, yaw within
+  1 deg, with table y = -board y and table yaw = -board yaw. Recovered marker size (corner rays against the plane,
+  so independent of the pose solver) matches the measured 47.0 mm: -1.8 to +3.5% over episodes, median +0.4%.
 - [ ] **C2.3 Fingertip.** MediaPipe Hands landmark 8, back-project the ray, intersect with the plane
-  z = fingertip radius (~8 mm). Needed only for T7.
-- [ ] **C2.4 Cleaning.** Drop low-confidence frames, interpolate gaps ≤ 5 frames, Savitzky–Golay filter,
+  z = fingertip radius (~8 mm). Needed only for T7, so it moves there (P1); T2 is done without it.
+  **Code and tests done, not run on the data: blocked on a measurement.** `extract/fingertip.py` cuts the camera ray
+  with z = tip radius - box height (in the marker-plane frame); `data/props.yaml` has no fingertip radius and the plan's
+  "~8 mm" is a guess, so the code requires `finger: tip_radius_mm: <measured>` and has no default. Until it exists
+  `finger_xy` is NaN in every `.npz`; then `python -m extract.fingertip --fetch-model` (once) and
+  `python -m extract.run --finger`. Checked once on 5 episodes with a scratch 8 mm: during contact the fingertip sits
+  a median 47-50 mm from the box centre (half side 40.5 + radius 8 = 48.5), so the geometry is right. Coverage is
+  the problem, see "What didn't work".
+- [x] **C2.4 Cleaning.** Drop low-confidence frames, interpolate gaps ≤ 5 frames, Savitzky–Golay filter,
   resample to the sim control rate. Contact window from cube speed threshold.
   **Test:** gaps of ≤ 5 frames are interpolated, longer gaps are left as gaps; yaw is unwrapped before filtering.
-- [ ] **C2.5 Output + checks.** `data/processed/ep_XXX.npz` with `t, cube_xy_yaw, finger_xy, contact`.
+  **Done 2026-10-07** (`extract/clean.py`). Gates: cube reprojection RMS <= 1.5 px (clean frames 0.1-0.8), marker tilt
+  <= 20 deg, a Hampel test (7 frames, 10 mm / 15 deg from the local median). None fired on the real data (0 frames
+  dropped, 0 interpolated, no gap in 38 episodes): the gates are there for the next recording. Smoothing: Savitzky-Golay
+  window 11, order 2, fitted on the CSV timestamps (the camera clock jitters up to 55 ms between frames; scipy's filter
+  assumes uniform spacing and put up to 1 mm of error on linear motion in a test, so `savgol_times` fits the local
+  quadratic at the true times; identical to scipy on uniform times, tested). Raw-to-smoothed residual 0.19-0.51 mm,
+  so the filter removes little noise and mostly keeps the motion as measured. Output rate `CONTROL_HZ = 20`: the sim
+  env may resample further (`t` is stored); change it in one place if T3 settles on another rate. Contact = smoothed
+  cube speed > 5 mm/s, pauses < 0.5 s bridged, runs < 0.2 s dropped: 34-73% of each clip, first contact at 1.5-4.5 s,
+  speed while pushing about 30-90 mm/s. The box is not assumed still at the start: the speed at the first sample is
+  0.1-8 mm/s (ep_012 and ep_071 above the 5 mm/s contact threshold, and contact is read from the speed, not from t = 0).
+- [x] **C2.5 Output + checks.** `data/processed/ep_XXX.npz` with `t, cube_xy_yaw, finger_xy, contact`.
   Plot all trajectories on one figure. Sanity: recovered cube size matches the measured one.
   **Test:** a schema validator (keys, shapes, metres, increasing time, recovered cube size vs `props.yaml`),
   run on every real episode as well as in the tests.
-- [ ] **C2.6 Freeze split.** Seeded 80/20 train/test by episode, stratified by category; showcase set separate.
+  **Done 2026-10-07.** `python -m extract.run` (about 2 min, detection runs in a process pool; `--cache-dir` reuses
+  detections while developing) writes the 38 `data/processed/ep_XXX.npz`, `results/qa_extraction.csv` and
+  `results/trajectories_overlay.png`. A full re-run from raw video reproduces the files exactly. The `.npz` holds the
+  four planned keys plus `cube_marker_side` (the recovered marker edge in m, for the schema's size check; downstream
+  ignores it). `finger_xy` is NaN until C2.3 runs. `python -m extract.schema` validates every file (38/38; also a
+  test). Sanity on size: the plan asks for the recovered cube size; only the marker is observable (one marker on the top
+  face), so that is what is checked, to 5%, and it is within 3.5% everywhere. Workspace covered: x -0.37 to -0.08 m,
+  y -0.24 to 0.07 m in the table frame (board origin): the pushing area lies to the left of the board's origin.
+  `qa_extraction.csv` has the asked columns (visibility, gaps, plane residual, board pixel drift) plus hold length,
+  hold deviation, plane spread and prior weight, marker size, contact fraction, path length and a `notes` column of
+  warnings.
+- [x] **C2.6 Freeze split.** Seeded 80/20 train/test by episode, stratified by category; showcase set separate.
   Write `data/splits.json` and commit before any method runs.
   **Test:** same split for the same seed, no train/test overlap, showcase episodes excluded.
+  **Done 2026-10-07** (`extract/split.py`, `data/splits.json`, seed 0). From the manifest alone, not from extraction
+  results, before any method exists. Each non-showcase category gives max(1, round(0.2 n)) test episodes: 27 train,
+  7 test (ep_005, ep_009 straight; ep_016, ep_057 curve; ep_027, ep_031 turn; ep_036 multi), 4 showcase held out
+  entirely (ep_049, 050, 055, 071). Re-running refuses to overwrite a split that differs from what the manifest and
+  seed give, and a test checks the committed file against a regeneration and against the processed episodes. The
+  test set holds ep_057, one of the episodes with the board hidden for 9.9 s (board measured in 36% of frames).
 
 ## T3: Simulation env (P0)
 
@@ -401,6 +460,28 @@ Rotating the cube needs pusher contact-mode switching, so yaw stays P2.
   added: it turns claim (4) from a cited design choice into a result.
 - 2026-10-07: "Hand as hint" considered, not planned: use the fingertip's approach side to choose where the pusher
   starts (after Human2Sim2Robot's pre-contact hand-pose initialisation).
+- 2026-10-07: T2 table frame. Origin is the board origin's foot on the fitted marker-height plane, so (x, y) do not
+  depend on the box height; z up, y the board's y flipped (the board frame is OpenCV's, y down, z into the table),
+  yaw counter-clockwise. The plane is fitted per episode, with a ridge prior on its slope from the episodes that span
+  the plane, because a straight push is a line and cannot fix the tilt across it. The camera moved between and
+  within episodes, so a per-session plane would be wrong; the prior is only a fallback for the degenerate directions.
+- 2026-10-07: Board pose gates and holds. A board pose counts only with all 4 markers and reprojection RMS <= 1.2 px
+  (partly covered markers give 1.4-5.6 px with the depth jumping up to 5 mm). Holds are interpolated (slerp) in the
+  camera frame. The hold is not verified directly while no marker is seen; QA reports where partly visible markers
+  disagree with it (p95, a percentile because a half-covered marker's corners spike for a few frames at the edges
+  of an occlusion).
+- 2026-10-07: Smoothing on true timestamps (`savgol_times`) rather than scipy's index-based filter: the camera clock
+  jitters up to 55 ms around 33 ms, and the index-based filter gave up to 1 mm of error on linear motion in a test.
+- 2026-10-07: Marker pose from `solvePnP` as the plan says, not a ray cut with the fitted plane. Cutting the marker
+  centre's ray with the plane would remove the line-of-sight scatter (plane residual median 1.9 mm), at the cost of
+  using the same data twice (plane fit and position). Not done; the smoothed residual to the raw data is 0.2-0.5 mm
+  and 2 mm is a tenth of the 2 cm success threshold. Candidate if tracking error turns out to matter.
+- 2026-10-07: Control rate set to 20 Hz in `extract/clean.py` (`CONTROL_HZ`) since T3 has not fixed one; `.npz` files
+  carry `t`, so the env can resample. To be reconciled when C3.5 lands.
+- 2026-10-07: C2.3 does not guess the fingertip radius. `data/props.yaml` needs `finger.tip_radius_mm`; the code
+  refuses without it (the "~8 mm" in the plan is a guess, and a scratch run with it gave a fingertip-to-box-centre
+  distance of 47-50 mm, consistent). The hand model (`hand_landmarker.task`, 7.8 MB, sha256 checked) is downloaded to
+  gitignored `data/models/` by `python -m extract.fingertip --fetch-model`.
 
 ## What didn't work
 
@@ -431,3 +512,19 @@ Rotating the cube needs pusher contact-mode switching, so yaw stays P2.
   straight after SPACE instead of after a 1 s still.
 - QA first pass required board and box in the same frame and so reported board occlusions as box dropouts;
   the box was visible throughout in those episodes. Separating the two changed the verdict on 5 episodes.
+- Plane fit per straight episode: the points lie on a line (minor-axis spread 1-8 mm), the tilt across it is
+  undetermined, and a plain fit gave tilts of 6-68 deg (against 2-6 deg where the points spread). The ridge prior
+  fixed that; the plan's "fit a plane to the box-top positions" alone does not work for the 14 near-collinear paths.
+- Plane residual was expected below 1 mm (C1.2) and is 1-4.9 mm per episode (median 1.9). The C1.2 figure came
+  from four stationary positions.
+- Using max pixel deviation of partly visible board markers as the "camera moved while the board was hidden" check:
+  5-8 px, which looked like a moved camera. The cause is a few frames of biased corners at the edges of occlusions;
+  the p95 is 2.5-3.9 px and the sustained offset about 1 px.
+- `scipy.signal.savgol_filter` on the jittery camera timestamps (see decision log).
+- MediaPipe hand landmarks on these clips: the camera is nearly overhead and the hand mostly leaves the frame, so
+  only the fingertip is in view. The hand was found in a median 42% of frames (range 0-70%, confidence 0.3; 0 of 38
+  episodes above 90%, 31 below 50%; ep_000 and ep_058 0%). That includes the hand-out-of-frame second at each end
+  of every clip, but inside the contact window it is also patchy (0-100% in the 5 episodes checked, confidence 0.5). Lowering the
+  detection confidence from 0.5 to 0.1 raised ep_000 from 0 to 34% and left ep_025 at 19%. T7 cannot rely on
+  MediaPipe alone; options: infer the fingertip from the box's motion and contact point (the pusher's position follows
+  from the contact), or colour/skin segmentation of the fingertip, or cut T7's fidelity. Decide when T7 starts.

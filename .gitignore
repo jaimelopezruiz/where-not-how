@@ -5,3 +5,4 @@ __pycache__/
 *.egg-info/
 .ik_baseline.npz
 docs/media/tests/
+data/models/
