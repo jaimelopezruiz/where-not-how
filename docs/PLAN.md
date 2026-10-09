@@ -485,9 +485,12 @@ Rotating the cube needs pusher contact-mode switching, so yaw stays P2.
   `pip install huggingface_hub` then `python -c "from huggingface_hub import snapshot_download;
   snapshot_download('JaimeLR/where-not-how-pushes', repo_type='dataset', local_dir='data/raw')"`. Check it once on
   the second PC.
-- [ ] **C11.6 Complete `tests/README.md`.** It lists 8 of 21 test files; add a row for every other `tests/test_*.py`
+- [x] **C11.6 Complete `tests/README.md`.** It lists 8 of 21 test files; add a row for every other `tests/test_*.py`
   (same columns: what it covers, the failure it catches, speed). The README links it as the purpose of each test
   file; one line on tests, no test counts quoted.
+  **Done 2026-10-09** with the last pre-freeze fixes: `train_full`/`train_residual` docstrings show `--name`
+  (required), training-curves legend moved off the data. Shipped models load (`rl.eval_policy --run models/<run>`
+  on ep_010, train). **Code frozen (G4) after this merge.**
 
 ## T12: Submission (P0)
 
