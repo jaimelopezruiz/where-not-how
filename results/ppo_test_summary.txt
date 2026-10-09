@@ -1,0 +1,7 @@
+Category        N  Success%  Mean dev (cm)  Final err (cm)  Progress  Time (s)
+------------------------------------------------------------------------------
+curve           2       0.0           7.31           25.39     0.294       n/a
+multi           1       0.0           0.67            8.86     0.567       n/a
+straight        2       0.0           3.87           24.90     0.040       n/a
+turn            2       0.0           8.44           31.29     0.012       n/a
+0/7 succeed
