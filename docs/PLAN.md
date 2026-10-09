@@ -473,7 +473,12 @@ Rotating the cube needs pusher contact-mode switching, so yaw stays P2.
   (object vs hand, progress indexing, RL in EE space with analytic IK); what didn't work; how to run; limitations.
   **In progress Fri:** thesis, data-drives-robot, pipeline table, data collection, results and what didn't work
   drafted; design choices, limitations, VLA paragraph, setup and running, GIF caption still to write.
-- [ ] **C11.2 Clean-clone test.** Fresh venv, follow the README literally, confirm the eval script runs.
+- [x] **C11.2 Clean-clone test.** Fresh venv, follow the README literally, confirm the eval script runs.
+  **Done 2026-10-09** on the second PC (fresh clone into a new folder, Python 3.11 venv): smoke OK, 401 tests pass,
+  all four test evaluations identical to the main PC per episode, results table identical, HF download (2.23 GB),
+  both showcase GIFs, `extract.run` 38/38 (only ep_005.npz differs, by 1.1e-16 m: floating-point rounding). README
+  fixes from it: create the venv with `py -3.11` (plain `python` was 3.14 there) and the PowerShell
+  execution-policy line before `activate`.
 - [x] **C11.3 Results table and training curves** (`scripts/results_figures.py`, `tests/test_results_figures.py`):
   `results/results_table.md` from `results/<method>_test.csv` files, `results/training_curves.png` from run
   directories (concatenates `progress*.csv` of a resumed run). Mean deviation is displacement-weighted, so a box
@@ -485,7 +490,7 @@ Rotating the cube needs pusher contact-mode switching, so yaw stays P2.
   models/<run>` loads them unchanged. README "How to run" evaluates the shipped models; training commands optional.
   **Done 2026-10-09:** `models/residual_dev5`, `models/residual_s0_1M`, `models/ppo` (1.3 MB; copies checked against
   the source checkpoints).
-- [ ] **C11.5 Raw-video note in the README.** `scripts/showcase.py` and re-extraction read `data/raw/` (gitignored);
+- [x] **C11.5 Raw-video note in the README.** `scripts/showcase.py` and re-extraction read `data/raw/` (gitignored);
   evaluation does not (processed `.npz` are committed). README gives the download into `data/raw/`:
   `pip install huggingface_hub` then `python -c "from huggingface_hub import snapshot_download;
   snapshot_download('JaimeLR/where-not-how-pushes', repo_type='dataset', local_dir='data/raw')"`. Check it once on

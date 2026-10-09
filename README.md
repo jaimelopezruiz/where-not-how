@@ -140,12 +140,13 @@ The brief invites VLAs and world models, and I chose not to use one here. The re
 
 ## Setup and running
 
-Tested on Windows 11 with Python 3.11, CPU only. Nothing below needs a GPU.
+Tested on Windows 11 with Python 3.11, CPU only, on two machines from a fresh clone; both reproduce the results table exactly. Nothing below needs a GPU.
 
 ```
 git clone https://github.com/jaimelopezruiz/where-not-how
 cd where-not-how
-python -m venv .venv
+py -3.11 -m venv .venv             # Linux/macOS: python3.11 -m venv .venv
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass   # PowerShell only, if activate is blocked
 .venv\Scripts\activate            # Linux/macOS: source .venv/bin/activate
 pip install -e ".[dev]"
 ```
@@ -188,7 +189,7 @@ python -m scripts.showcase --run models/residual_dev5 --method residual_dev5 --e
 python -m scripts.showcase --controller scripted --episodes ep_055
 ```
 
-With the videos in place, `python -m extract.run` re-extracts the box paths from the raw clips into `data/processed/` (about 2 min).
+With the videos in place, `python -m extract.run` re-extracts the box paths from the raw clips into `data/processed/` (about 2 min); on a second machine it reproduced the committed files to within 1e-16 m.
 
 **5. Training (optional, hours).** Runs go to `runs/<name>/`; evaluate them with `--run runs/<name>` as in step 3.
 
