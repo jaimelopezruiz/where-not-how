@@ -50,7 +50,7 @@ Statuses: `todo` / `in progress` / `done` / `blocked` / `cut`.
 | T8  | Showcase trajectory                | P1  | 1 h    | Fri | done   |
 | T9  | Data-scaling curve                 | P1  | compute| Thu night | cut  |
 | T10 | Yaw tracking                       | P2  | 2–3 h  | Fri | cut    |
-| T11 | README / presentation              | P0  | 4–5 h  | Fri | todo   |
+| T11 | README / presentation              | P0  | 4–5 h  | Fri | in progress |
 | T12 | Submission                         | P0  | 0.5 h  | Fri | todo   |
 
 ## Gates (decide at the time, log the decision)
@@ -60,7 +60,7 @@ Statuses: `todo` / `in progress` / `done` / `blocked` / `cut`.
   **Passed Thu 12:08:** scripted pusher 6/7 on the test split (C5.2).
 - **G3, Thu 23:00:** RL learning curve rising on the full train split → keep training overnight. If flat, switch T6 to residual RL on top of the scripted pusher (C6.5).
   **Taken early, Thu ~15:50 at 2M steps** (rule agreed in advance): plain PPO flat, switched to C6.5.
-- **G4, Fri 18:00:** code freeze. README, GIFs and submission only after this. (Moved to Fri morning, after the results step
+- **G4, Fri 18:00:** code freeze. **Reached Fri ~10:15** (merge of C11.6). README, GIFs and submission only after this. (Moved to Fri morning, after the results step
   and pre-freeze checks; after it, code changes only to fix what the clean-clone check breaks.)
 
 ## Workflow rules
@@ -212,7 +212,7 @@ Statuses: `todo` / `in progress` / `done` / `blocked` / `cut`.
   exact to 1e-6 including the held frames. Rendered board + cube through the detector: x, y within 5 mm, yaw within
   1 deg, with table y = -board y and table yaw = -board yaw. Recovered marker size (corner rays against the plane,
   so independent of the pose solver) matches the measured 47.0 mm: -1.8 to +3.5% over episodes, median +0.4%.
-- [ ] **C2.3 Fingertip.** MediaPipe Hands landmark 8, back-project the ray, intersect with the plane
+- [ ] **C2.3 Fingertip (cut with T7).** MediaPipe Hands landmark 8, back-project the ray, intersect with the plane
   z = fingertip radius (~8 mm). Needed only for T7, so it moves there (P1); T2 is done without it.
   **Code and tests done, not run on the data: blocked on a measurement.** `extract/fingertip.py` cuts the camera ray
   with z = tip radius - box height (in the marker-plane frame); `data/props.yaml` has no fingertip radius and the plan's
@@ -396,7 +396,7 @@ object-aware replay (that is T7).
 - [x] **C6.7 Deviation-weighted reward for the residual run.** `deviation_weight` on PushTrackEnv (None = C6.1
   reward): the per-step `0.1 x lateral` term becomes `w x (lateral / 1 cm) x (box displacement / path length)`,
   which sums to about w x mean deviation (cm), the metric's weighting, and does not pay for speed. w = 5, fixed in
-  advance: 0.5 cm of extra mean deviation costs 2.5, about twice the ~1.2 that finishing 146 -> 108 steps earns
+  advance: 0.5 cm of extra mean deviation costs 2.5, more than twice the ~1.07 that finishing 146 -> 108 steps earns
   through the discounted +10 bonus; the bonus equals 2 cm of mean deviation, the success threshold. Run
   `residual_dev5`, 3M steps. **Code done 2026-10-08** (`sim/push_env.py`, `rl/train_ppo.py`, `rl/train_residual.py`,
   `tests/test_push_env_reward.py`): None reproduces the C6.1 reward step for step; a box pushed at a constant 1 cm
@@ -419,13 +419,14 @@ object-aware replay (that is T7).
 - [ ] **C6.6 Time-indexed reward ablation (P2).** The same PPO setup with a time-indexed tracking reward
   (reference point at time t, not at progress p); compare on the test split. Turns claim (4) from a cited design
   choice into a result.
+  **Not run** (P2, no time). Progress indexing stays a design choice, not a measured result; the README says so.
 
 ## T7: Hand-replay baseline (P1)
 
 This is the "replay" baseline of Human2Sim2Robot and HuDOR's base policy (retargeted hand, open-loop). Since the
 sim cube starts at the recorded start pose, their "object-aware" variant is identical here.
 
-- [ ] **C7.1** Fingertip path through the same workspace map, followed open-loop at the recorded timing.
+- [ ] **C7.1 (cut with T7)** Fingertip path through the same workspace map, followed open-loop at the recorded timing.
   Evaluate with T4. Expected to fail; the failure modes are evidence for the thesis, so capture GIFs of them.
   **Stopped at the coverage gate 2026-10-08** (`extract/finger_coverage.py`, `results/finger_coverage.csv`,
   `results/finger_coverage_summary.txt`). Stop rule set before the run: fewer than 4 of 7 usable test episodes.
@@ -456,18 +457,22 @@ Extra evidence for claim (1); the main evidence is the T6 policy scored on the t
 would compete with the T6 full run for CPU overnight. Revisit at G3.
 
 - [ ] **C9.1** Train on 5 / 10 / 20 demos, 2 seeds each, same held-out test set. Overnight Thursday. One plot.
+  **Not revisited at G3:** the night went to the plain-PPO record run and the residual runs.
 
 ## T10: Yaw tracking (P2)
 
 Rotating the cube needs pusher contact-mode switching, so yaw stays P2.
 
 - [ ] **C10.1** Add orientation error to reward and metrics. Only if position tracking is solid by Friday midday.
+  **Cut** (replan 2026-10-07). Yaw is recorded in every `.npz` but neither commanded nor scored; README Limitations.
 
 ## T11: README / presentation (P0)
 
 - [ ] **C11.1 Structure.** Showcase GIF; one-paragraph thesis; data collection (what, how, how much, link to raw);
   method; results table (hand replay / scripted / RL); design choices with rationale
   (object vs hand, progress indexing, RL in EE space with analytic IK); what didn't work; how to run; limitations.
+  **In progress Fri:** thesis, data-drives-robot, pipeline table, data collection, results and what didn't work
+  drafted; design choices, limitations, VLA paragraph, setup and running, GIF caption still to write.
 - [ ] **C11.2 Clean-clone test.** Fresh venv, follow the README literally, confirm the eval script runs.
 - [x] **C11.3 Results table and training curves** (`scripts/results_figures.py`, `tests/test_results_figures.py`):
   `results/results_table.md` from `results/<method>_test.csv` files, `results/training_curves.png` from run
@@ -661,7 +666,7 @@ Rotating the cube needs pusher contact-mode switching, so yaw stays P2.
   parameters were fixed before the sanity run and not swept. Results from it measure what RL adds to the scripted
   pusher, not RL learning to push; the README says so.
 - 2026-10-08: Tracking accuracy is the objective; speed is not (the progress-indexed reward exists to drop timing).
-  The C6.1 reward did not encode that: with gamma 0.99 the discounted success bonus pays about +1.2 for finishing
+  The C6.1 reward did not encode that: with gamma 0.99 the discounted success bonus pays about +1.07 (10 x (0.99^108 - 0.99^146)) for finishing
   146 -> 108 steps sooner, while 0.1 x lateral (m) charges about 0.05 for 0.5 cm more deviation, so residual_s0
   optimised speed. Fixed for the residual run by C6.7 (weight derived above, not swept). Plain PPO keeps the
   C6.1 reward; it never reached the regime where this matters. Missed when C6.1 and C6.5 were reviewed.
