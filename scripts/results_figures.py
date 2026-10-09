@@ -170,7 +170,7 @@ def plot_curves(runs, path, smooth=25):
     axes[0].set_ylim(-0.03, 1.03)
     axes[2].set_ylim(-0.03, 1.03)
     axes[1].set_ylim(bottom=0)
-    axes[0].legend(frameon=False, fontsize=9, labelcolor=INK, loc="upper left")
+    axes[0].legend(frameon=False, fontsize=9, labelcolor=INK, loc="center right")
     fig.tight_layout(rect=(0, 0.05, 1, 1))
     fig.text(0.01, 0.012, f"Deviation is measured over the box's displacement, so a box that never moves reads near 0 "
              f"(check it against success). Rollout panel: thin line per iteration, bold {smooth}-iteration mean.",

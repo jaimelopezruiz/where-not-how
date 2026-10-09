@@ -1,6 +1,6 @@
 """C6.5: residual PPO on the scripted pusher, ready to launch (nothing here touches the test split).
 
-    python -m rl.train_residual                    # runs/residual_s0, 8 envs, 3 M steps
+    python -m rl.train_residual --name residual_s0  # runs/residual_s0, 8 envs, 3 M steps (--name is required)
     python -m rl.train_residual --residual-scale 0.1 --name residual_s0_r01
     python -m rl.train_residual --name residual_s0 --resume
 

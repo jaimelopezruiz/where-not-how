@@ -1,6 +1,6 @@
 """C6.4: PPO on the whole train split, ready to launch (nothing here touches the test split).
 
-    python -m rl.train_full                       # runs/full_s0, 8 envs, until stopped or 10 M steps
+    python -m rl.train_full --name full_s0        # runs/full_s0, 8 envs, until stopped or 10 M steps (--name is required)
     python -m rl.train_full --seed 1 --name full_s1
     python -m rl.train_full --name full_s0 --resume   # continue from the latest checkpoint
 
