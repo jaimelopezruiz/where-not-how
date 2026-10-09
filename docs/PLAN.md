@@ -45,9 +45,9 @@ Statuses: `todo` / `in progress` / `done` / `blocked` / `cut`.
 | T3  | Simulation env                     | P0  | 3–4 h  | Wed/Thu | done |
 | T4  | Evaluation harness                 | P0  | 2 h    | Thu | done   |
 | T5  | Scripted pusher                    | P0  | 3 h    | Thu | done   |
-| T6  | RL policy                          | P1  | 6–8 h  | Thu/Fri | in progress (C6.5 training) |
+| T6  | RL policy                          | P1  | 6–8 h  | Thu/Fri | done   |
 | T7  | Hand-replay baseline               | P1  | 2 h    | Thu | cut (C7.1 coverage gate) |
-| T8  | Showcase trajectory                | P1  | 1 h    | Fri | in progress (pipeline done) |
+| T8  | Showcase trajectory                | P1  | 1 h    | Fri | done   |
 | T9  | Data-scaling curve                 | P1  | compute| Thu night | cut  |
 | T10 | Yaw tracking                       | P2  | 2–3 h  | Fri | cut    |
 | T11 | README / presentation              | P0  | 4–5 h  | Fri | todo   |
@@ -59,7 +59,9 @@ Statuses: `todo` / `in progress` / `done` / `blocked` / `cut`.
 - **G2, Thu 15:00:** scripted pusher completes held-out trajectories in sim → submittable floor reached. If not, all time goes to T5 until it does.
   **Passed Thu 12:08:** scripted pusher 6/7 on the test split (C5.2).
 - **G3, Thu 23:00:** RL learning curve rising on the full train split → keep training overnight. If flat, switch T6 to residual RL on top of the scripted pusher (C6.5).
-- **G4, Fri 18:00:** code freeze. README, GIFs and submission only after this.
+  **Taken early, Thu ~15:50 at 2M steps** (rule agreed in advance): plain PPO flat, switched to C6.5.
+- **G4, Fri 18:00:** code freeze. README, GIFs and submission only after this. (Moved to Fri morning, after the results step
+  and pre-freeze checks; after it, code changes only to fix what the clean-clone check breaks.)
 
 ## Workflow rules
 
@@ -360,7 +362,7 @@ object-aware replay (that is T7).
   **Done 2026-10-08** (`rl/train_ppo.py`, `runs/overfit_ep010_a3`). ep_010 (12 cm straight), seed 0: the deterministic
   policy succeeds from 200k steps (~10 min); final model progress 1.00, final error 0.38 cm, mean deviation 1.67 cm
   (scripted ~0.5 cm). Training success 0.27 at 86k, 0.90 at 410k. Two attempts failed first (decision log).
-- [ ] **C6.4 Full train** on the train split, fixed seeds, TensorBoard logs, checkpoints. Evaluate at G3.
+- [x] **C6.4 Full train** on the train split, fixed seeds, TensorBoard logs, checkpoints. Evaluate at G3.
   Launched Thu 14:43 (`python -m rl.train_full --seed 0 --name full_s0`, in the t4 worktree): 8 envs, 10M steps,
   ~500 steps/s, eval every 100k on 8 train episodes (2 per category), checkpoints every 500k. At 1M steps: training
   success ~1%, return flat near -9.5 since 250k, deterministic eval does not move the box yet.
@@ -371,7 +373,11 @@ object-aware replay (that is T7).
   identical PC (fresh clone, Python 3.11 venv + `pip install -e .`, no conda) to finish 10M as the record of plain PPO:
   `--resume --total-steps 7000000` (SB3 adds it to the current count). `progress.csv` for 0-3M saved as
   `progress_0-3M.csv` (SB3 overwrites it on resume).
-- [ ] **C6.5 Fallback: residual RL.** Action = scripted pusher + learned residual. Matches the brief's
+  **Final (10M; 3M here + 7M resumed, ~906 steps/s on the second PC):** deterministic train eval 1/8 once (3.3M),
+  0/8 at every other checkpoint; rollout success under 10% throughout. Test, run once (2026-10-09): 0/7, mean
+  progress 0.18, final error 24.6 cm. `models/ppo/config.json` shows total_steps 7M and resume true (the resumed
+  leg); the run is 10M in total.
+- [x] **C6.5 Fallback: residual RL.** Action = scripted pusher + learned residual. Matches the brief's
   "bootstrap a policy and use RL" suggestion; use only if G3 fails, and say so in the README.
   Residual RL on a base controller is used in HuDOR and ManipTrans.
   **Code done 2026-10-08** (`rl/residual.py`, `rl/train_residual.py`, `tests/test_residual.py`; `residual_scale`
@@ -385,6 +391,8 @@ object-aware replay (that is T7).
   `residual_s0` (stopped at 1M, 17:05, to free the CPU for C6.7): eval 8/8 at every point, rollout success
   0.98-1.0; train-eval mean deviation 0.52 cm untrained, 0.56-0.71 cm from 200k to 900k (one eval at 500k read 1.00,
   an outlier on 8 episodes); episodes 146 -> 103 steps. It learned to finish about 30% sooner, not to track better.
+  Test, 1M model, run once (2026-10-09): 6/7 (ep_027 turn fails, final error 4.3 cm), mean deviation 0.88 cm, final
+  error 1.03 cm, completion 3.8 s.
 - [x] **C6.7 Deviation-weighted reward for the residual run.** `deviation_weight` on PushTrackEnv (None = C6.1
   reward): the per-step `0.1 x lateral` term becomes `w x (lateral / 1 cm) x (box displacement / path length)`,
   which sums to about w x mean deviation (cm), the metric's weighting, and does not pay for speed. w = 5, fixed in
@@ -394,6 +402,20 @@ object-aware replay (that is T7).
   `tests/test_push_env_reward.py`): None reproduces the C6.1 reward step for step; a box pushed at a constant 1 cm
   offset accumulates 5 x 1.0 within 10%; a stationary offset box gets 0. Sanity (100k, 4 envs): eval 8/8, 0.52-0.58 cm,
   143-147 steps. `residual_dev5` launched ~17:15 from t3. w is not retuned after seeing its curve.
+  Final train eval (3M): 8/8, 0.56 cm, 118 steps (7/8 at 1.8M, 2.4M, 2.8M). Test, final model, run once (2026-10-09):
+  7/7, mean deviation 0.63 cm (scripted 0.61), final error 0.55 cm (0.39), completion 4.1 s (5.4). Per episode it
+  is mixed: better on ep_057 (0.41 vs 1.00) and ep_027 (0.87 vs 1.07), worse on ep_031 (1.29 vs 0.29), which never
+  settled within the pusher's 5 mm stop tolerance and ran to the 600-step limit (counted a success: final 1.46 cm).
+  Completion time is the time to first meet the success criterion, mean over successes.
+
+  **Test results (each run once, final models, rules in the decision log):**
+
+  | Method | Success | Mean dev (cm) | Final err (cm) | Completion (s) |
+  |---|---|---|---|---|
+  | Scripted pusher (frozen) | 7/7 | 0.61 | 0.39 | 5.4 |
+  | Residual PPO, deviation-weighted reward (residual_dev5) | 7/7 | 0.63 | 0.55 | 4.1 |
+  | Residual PPO, C6.1 reward, 1M (residual_s0) | 6/7 | 0.88 | 1.03 | 3.8 |
+  | Plain PPO, 10M (full_s0) | 0/7 | 5.70 | 24.57 | n/a |
 - [ ] **C6.6 Time-indexed reward ablation (P2).** The same PPO setup with a time-indexed tracking reward
   (reference point at time t, not at progress p); compare on the test split. Turns claim (4) from a cited design
   choice into a result.
@@ -414,7 +436,7 @@ sim cube starts at the recorded start pose, their "object-aware" variant is iden
 
 ## T8: Showcase (P1)
 
-- [ ] **C8.1** Run the best controller on the held-aside letter traces. Side-by-side GIF for the top of the README.
+- [x] **C8.1** Run the best controller on the held-aside letter traces. Side-by-side GIF for the top of the README.
   **Pipeline done 2026-10-08** (`scripts/showcase.py`, `tests/test_showcase.py`), run with the scripted pusher; the
   final controller is chosen Fri from the test results (`--run runs/<name>`, not yet run on a trained policy).
   Feasibility under the frozen map (C3.4 test): 4/4 showcase traces, 100% of points. Scripted, until-done: 4/4,
@@ -422,6 +444,11 @@ sim cube starts at the recorded start pose, their "object-aware" variant is iden
   clock at real speed, letters upright (C shown from the board side, rotation only), reference path dashed;
   `eval.report.write_gif` gave 19.5 MB per episode, so the script has its own palette-limited writer (< 8 MB).
   The sim pushes about twice as fast as the human (frozen 6.6 cm/s; ep_071 10 s against 18 s).
+  **Residual policy on the showcase (2026-10-09,** `--run models/residual_dev5`, first use of that path): 4/4, mean
+  deviation 0.41 / 0.64 / 0.48 / 0.52 cm (L, U, S, C; all 0.51 against scripted 0.65), final error 0.34 cm. README
+  top GIF: `results/showcase_residual_dev5_ep_055.gif`, with `results/showcase_scripted_ep_055.gif` for comparison.
+  The first run failed writing the S GIF (Errno 22: OneDrive locking the file between the size-reduction saves);
+  rerun with OneDrive paused.
 
 ## T9: Data-scaling curve (P1)
 
@@ -446,6 +473,21 @@ Rotating the cube needs pusher contact-mode switching, so yaw stays P2.
   `results/results_table.md` from `results/<method>_test.csv` files, `results/training_curves.png` from run
   directories (concatenates `progress*.csv` of a resumed run). Mean deviation is displacement-weighted, so a box
   that never moves scores near 0: report progress and success alongside it (plain PPO's curve shows this).
+- [x] **C11.4 Ship the trained models (Fri, after training, before G4).** `runs/` is gitignored, so a clone cannot
+  check the RL rows without hours of training. Copy each results-table run into `models/<run>/`: `model.zip`
+  (residual_s0: `rl_model_1000000_steps.zip`), `vecnormalize.pkl`, `config.json`, `eval_curve.csv`, `progress*.csv`.
+  About 1 MB total for residual_dev5, residual_s0 (1M) and full_s0 (10M). `python -m rl.eval_policy --run
+  models/<run>` loads them unchanged. README "How to run" evaluates the shipped models; training commands optional.
+  **Done 2026-10-09:** `models/residual_dev5`, `models/residual_s0_1M`, `models/ppo` (1.3 MB; copies checked against
+  the source checkpoints).
+- [ ] **C11.5 Raw-video note in the README.** `scripts/showcase.py` and re-extraction read `data/raw/` (gitignored);
+  evaluation does not (processed `.npz` are committed). README gives the download into `data/raw/`:
+  `pip install huggingface_hub` then `python -c "from huggingface_hub import snapshot_download;
+  snapshot_download('JaimeLR/where-not-how-pushes', repo_type='dataset', local_dir='data/raw')"`. Check it once on
+  the second PC.
+- [ ] **C11.6 Complete `tests/README.md`.** It lists 8 of 21 test files; add a row for every other `tests/test_*.py`
+  (same columns: what it covers, the failure it catches, speed). The README links it as the purpose of each test
+  file; one line on tests, no test counts quoted.
 
 ## T12: Submission (P0)
 
@@ -625,6 +667,14 @@ Rotating the cube needs pusher contact-mode switching, so yaw stays P2.
 - 2026-10-08: Results-table rule, fixed before any RL test evaluation: each run is evaluated once on test with its
   final model: residual_dev5 (3M; the residual row), residual_s0 at 1M (the C6.1-reward comparison), full_s0 at 10M
   (plain PPO). No checkpoint selection; whatever comes out is reported.
+- 2026-10-08: Trained models are committed under `models/` (C11.4), not left in gitignored `runs/`: about 1 MB, and
+  without them the RL results cannot be checked without retraining.
+- 2026-10-08: Showcase controller rule, fixed before any RL test evaluation: the method with the lowest test mean
+  deviation among those with 7/7 test success; the scripted pusher on a tie. G4 code freeze moved to Fri
+  morning, right after the results step and the pre-freeze checks (models, tests README, figure legend).
+- 2026-10-09: Showcase GIF: residual_dev5 on the S trace, with the scripted pusher's S beside it. Chosen after the
+  showcase metrics: on the 4 held-out letters residual 0.51 cm mean deviation against 0.65 (S: 0.48 vs 1.00); on the
+  test split they tie (0.63 vs 0.61). Supersedes the 2026-10-08 showcase rule.
 
 ## What didn't work
 
@@ -688,3 +738,6 @@ Rotating the cube needs pusher contact-mode switching, so yaw stays P2.
   frame): the palm detector needs the whole hand in view.
 - The C6.1 reward on the residual run: it paid for finishing sooner (discounted success bonus) far more than for
   tracking, so residual_s0 got about 30% faster with mean deviation 0.6-0.7 cm against 0.52 untrained (C6.5, C6.7).
+- Plain PPO over the full train split (C6.4): 10M steps, deterministic train eval 1/8 once and 0/8 otherwise, test
+  0/7. Exploration never found the push-from-behind strategy across 27 paths; the policy std collapsed (0.37 -> 0.15)
+  while rollout success stayed under 10%.
